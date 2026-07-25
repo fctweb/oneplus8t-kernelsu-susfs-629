@@ -34,7 +34,7 @@
  }
  
  extern void ext4_unregister_sysfs(struct super_block *sb);
-@@ -70,3 +79,73 @@
+@@ -70,3 +79,71 @@
      track_throne(true);
      ksu_avc_spoof_late_init();
  }
