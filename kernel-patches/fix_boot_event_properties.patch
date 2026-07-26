@@ -34,7 +34,7 @@
  }
  
  extern void ext4_unregister_sysfs(struct super_block *sb);
-@@ -70,3 +79,33 @@
+@@ -70,3 +79,73 @@
      track_throne(true);
      ksu_avc_spoof_late_init();
  }
@@ -44,8 +44,48 @@
 +
 +static void susfs_restore_boot(void)
 +{
++	int i;
++	{
++		static const char * const paths[] = {
++			"/system/bin/su",
++			"/odm/bin/su",
++			"/data/adb/ksu/su",
++			"/system/addon.d",
++			"/system/build.prop",
++			"/data/adb/modules",
++			"/data/adb/modules_update",
++			"/data/adb/ksu-pdeath",
++			"/data/adb/ksu/.allowlist",
++			"/data/adb/ksu/.feature_config",
++			NULL,
++		};
++		for (i = 0; paths[i]; i++)
++			susfs_add_sus_path_kernel(paths[i]);
++	}
++	{
++		static const char * const maps[] = { "/data/adb/", NULL };
++		for (i = 0; maps[i]; i++) susfs_mark_inode_sus_map(maps[i]);
++	}
++	{
++		static const char * const mounts[] = { "/vendor", "/odm", NULL };
++		for (i = 0; mounts[i]; i++) susfs_add_sus_mount_kernel(mounts[i]);
++	}
++
++	susfs_set_uname_kernel("4.19.304", "Default/4.19");
++
++#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
++	susfs_set_log(false);
++#endif
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++	WRITE_ONCE(susfs_hide_sus_mnts_for_all_procs, true);
++#endif
++#ifdef CONFIG_KSU_SUSFS_ENABLE_AVC_LOG_SPOOFING
++	WRITE_ONCE(susfs_is_avc_log_spoofing_enabled, true);
++#endif
++
++	susfs_restore_properties();
 +	susfs_boot_restored = true;
-+	pr_info("susfs: boot restore complete (diagnostic mode)\n");
++	pr_info("susfs: boot restore complete\n");
 +}
 +
 +int susfs_is_boot_restored(void)
