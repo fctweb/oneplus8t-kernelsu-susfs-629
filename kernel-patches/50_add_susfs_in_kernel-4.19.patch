@@ -1357,7 +1357,11 @@ index 98363cb3d4b1..dafafce397fd 100644
  	if (!p)
  		goto fork_out;
 +#ifdef CONFIG_KSU_SUSFS_SUS_PATH
-+	p->susfs_task_state |= TASK_STRUCT_NON_ROOT_USER_APP_PROC;
++	/* Only set for non-root processes — root (UID 0) should see hidden paths.
++	 * This fixes KSU module installation: ksud runs as UID 0 and needs
++	 * access to /data/adb/modules_update/ which SUSFS would block. */
++	if (current_uid().val != 0)
++		p->susfs_task_state |= TASK_STRUCT_NON_ROOT_USER_APP_PROC;
 +#endif
  
  	cpufreq_task_times_init(p);
