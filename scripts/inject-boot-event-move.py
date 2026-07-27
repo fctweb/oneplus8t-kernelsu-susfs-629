@@ -191,32 +191,34 @@ void susfs_apply_module_updates(void)
 
 	dir = filp_open("/data/adb/modules_update/", O_RDONLY | O_DIRECTORY, 0);
 	if (IS_ERR(dir)) {
-		pr_debug("susfs: modules_update not found (no staging)\n");
+		pr_info("susfs: stage0 no staging dir\n");
 		return;
 	}
-	pr_debug("susfs: collecting module IDs from staging...\n");
+	pr_info("susfs: stage1 collecting module IDs\n");
 
-	names = kmalloc(SUSFS_MAX_STAGING * SUSFS_NAME_MAX, GFP_KERNEL);
+	names = kmalloc(SUSFS_MAX_STAGING * SUSFS_NAME_MAX, GFP_ATOMIC);
 	if (!names) {
-		pr_debug("susfs: kmalloc failed\n");
+		pr_info("susfs: stage1 kmalloc OOM\n");
 		filp_close(dir, NULL);
 		return;
 	}
 	cctx.names = names;
+	pr_info("susfs: stage2 iterate_dir\n");
 
 	iterate_dir(dir, &cctx.ctx);
 	filp_close(dir, NULL);
 
 	if (cctx.count == 0) {
+		pr_info("susfs: stage2 nothing to move\n");
 		kfree(names);
 		return;
 	}
 
-	pr_debug("susfs: moving %d module(s) to active...\n", cctx.count);
+	pr_info("susfs: stage3 moving %d module(s)\n", cctx.count);
 	for (i = 0; i < cctx.count; i++)
 		susfs_move_one(cctx.names[i]);
 	kfree(names);
-	pr_debug("susfs: module updates done\n");
+	pr_info("susfs: stage4 done\n");
 }
 #endif /* CONFIG_KSU_SUSFS */
 """
