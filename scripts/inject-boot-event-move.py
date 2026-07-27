@@ -191,6 +191,8 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         'extern void susfs_restore_properties(void);\n'
+        'static void susfs_restore_boot(void);\n'
+        'static int susfs_mark_inode_sus_map(const char *path);\n'
         'extern void susfs_apply_module_updates(void);\n'
         '#endif')
     for i, line in enumerate(lines):
