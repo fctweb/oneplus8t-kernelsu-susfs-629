@@ -23,22 +23,22 @@ static bool susfs_boot_restored __read_mostly = false;
 static void susfs_fixup_stale_f2fs_entry(const char *parent_path,
 					  const char *name)
 {
-	struct f2fs_dir_entry *(*find_entry)(struct inode *,
-					const struct qstr *, struct page **);
-	void (*delete_entry)(struct f2fs_dir_entry *, struct page *,
-			     struct inode *, struct inode *);
-	struct inode *(*f2fs_iget)(struct super_block *, unsigned long);
+	void *(*find_entry)(struct inode *, const struct qstr *,
+			    struct page **);
+	void (*delete_entry)(void *, struct page *, struct inode *,
+			     struct inode *);
+	struct inode *(*f2fs_iget_fn)(struct super_block *, unsigned long);
 	struct path parent_p;
 	struct page *res_page = NULL;
-	struct f2fs_dir_entry *de;
+	void *de;
 	struct inode *dir;
-	struct qstr qname;
+	struct qstr qname = QSTR_INIT(name, strlen(name));
 
 	find_entry = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	delete_entry = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-	f2fs_iget = (void *)kallsyms_lookup_name("f2fs_iget");
+	f2fs_iget_fn = (void *)kallsyms_lookup_name("f2fs_iget");
 
-	if (!find_entry || !delete_entry || !f2fs_iget) {
+	if (!find_entry || !delete_entry || !f2fs_iget_fn) {
 		pr_info("susfs: stale-entry cleanup unavailable\n");
 		return;
 	}
@@ -49,13 +49,14 @@ static void susfs_fixup_stale_f2fs_entry(const char *parent_path,
 		path_put(&parent_p);
 		return;
 	}
-	qname = QSTR_INIT(name, strlen(name));
 	de = find_entry(dir, &qname, &res_page);
 	if (de && res_page && !IS_ERR(res_page)) {
-		struct inode *test = f2fs_iget(dir->i_sb, le32_to_cpu(de->ino));
+		/* ino at byte-offset 4 in the packed f2fs_dir_entry */
+		unsigned long ino = *(const __le32 *)((const u8 *)de + 4);
+		struct inode *test = f2fs_iget_fn(dir->i_sb, le32_to_cpu(ino));
 		if (IS_ERR(test)) {
-			pr_info("susfs: removing stale entry '%s' (ino=%u err=%ld)\n",
-				name, le32_to_cpu(de->ino), PTR_ERR(test));
+			pr_info("susfs: removing stale entry '%s' (ino=%lu err=%ld)\n",
+				name, le32_to_cpu(ino), PTR_ERR(test));
 			delete_entry(de, res_page, dir, NULL);
 		} else {
 			iput(test);
@@ -308,8 +309,7 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
-        '#include <linux/f2fs_fs.h>\n'
-        '#include <linux/kallsyms.h>\n'
+        'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
