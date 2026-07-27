@@ -134,51 +134,67 @@ static void susfs_move_one(const char *name)
 	scnprintf(new_path, sizeof(new_path), "/data/adb/modules/%s", name);
 
 	err = kern_path(old_path, 0, &old_p);
-	if (err) return; /* source disappeared */
+	if (err) {
+		pr_info("susfs: move_one '%s' source not found err=%d\n", name, err);
+		return;
+	}
+	pr_info("susfs: move_one '%s' source found\n", name);
 
 	/* Ensure /data/adb/modules/ exists (create if first module install) */
 	if (kern_path("/data/adb/modules", 0, &modules_dir)) {
+		pr_info("susfs: move_one '%s' modules/ not found, creating\n", name);
 		struct path adb_dir;
 		if (!kern_path("/data/adb", 0, &adb_dir)) {
 			new_dentry = lookup_one_len("modules", adb_dir.dentry, 7);
 			if (!IS_ERR(new_dentry)) {
-				vfs_mkdir(adb_dir.dentry->d_inode, new_dentry, 0755);
+				int mkerr = vfs_mkdir(adb_dir.dentry->d_inode, new_dentry, 0755);
+				pr_info("susfs: move_one '%s' vfs_mkdir returned %d\n", name, mkerr);
 				dput(new_dentry);
+			} else {
+				pr_info("susfs: move_one '%s' lookup_one_len failed\n", name);
 			}
 			path_put(&adb_dir);
+		} else {
+			pr_info("susfs: move_one '%s' /data/adb/ not found\n", name);
 		}
 		/* Retry after creating it */
 		if (kern_path("/data/adb/modules", 0, &modules_dir)) {
+			pr_info("susfs: move_one '%s' modules/ still not found after mkdir\n", name);
 			path_put(&old_p);
 			return;
 		}
+		pr_info("susfs: move_one '%s' modules/ found after mkdir\n", name);
 	}
 
 	new_dentry = lookup_one_len(name, modules_dir.dentry, namlen);
 	if (IS_ERR(new_dentry)) {
+		pr_info("susfs: move_one '%s' lookup target dentry failed\n", name);
 		path_put(&modules_dir);
 		path_put(&old_p);
 		return;
 	}
+	pr_info("susfs: move_one '%s' found target dentry\n", name);
 
 	err = kern_path(new_path, 0, &new_p);
 	if (!err) {
-		/* Target exists → RENAME_EXCHANGE to swap atomically */
-		vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
+		pr_info("susfs: move_one '%s' target exists, RENAME_EXCHANGE\n", name);
+		err = vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
 			   new_p.dentry->d_parent->d_inode, new_p.dentry,
 			   NULL, RENAME_EXCHANGE);
+		pr_info("susfs: move_one '%s' exchange done err=%d\n", name, err);
 		path_put(&new_p);
 	} else {
-		/* Target doesn't exist → simple rename */
-		vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
+		pr_info("susfs: move_one '%s' target not exists, simple rename\n", name);
+		err = vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
 			   modules_dir.dentry->d_inode, new_dentry,
 			   NULL, 0);
+		pr_info("susfs: move_one '%s' rename done err=%d\n", name, err);
 	}
 
 	dput(new_dentry);
 	path_put(&modules_dir);
 	path_put(&old_p);
-	pr_info("susfs: move_one '%s' done (err=%d)\n", name, err);
+	pr_info("susfs: move_one '%s' finish\n", name);
 }
 
 void susfs_apply_module_updates(void)
