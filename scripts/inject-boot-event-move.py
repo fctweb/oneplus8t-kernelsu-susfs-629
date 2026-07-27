@@ -59,53 +59,45 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 		parent_path, name, err);
 
 	if (err == -EEXIST) {
-		/* Stale entry exists — try to remove it via f2fs internals */
+		/* A directory entry for 'name' already exists in the
+		 * on-disk f2fs dentry block, but it is INACCESSIBLE
+		 * from userspace (f2fs_lookup → f2fs_iget returns an
+		 * error or the inode's encryption context doesn't
+		 * match).  Delete it via f2fs_find_entry + f2fs_delete_entry,
+		 * regardless of whether f2fs_iget succeeds. */
 		void *(*fe_fn)(struct inode *, const struct qstr *,
 			       struct page **);
 		void (*de_fn)(void *, struct page *, struct inode *,
 			      struct inode *);
-		struct inode *(*iget_fn)(struct super_block *, unsigned long);
+		unsigned long ino = 0;
 		struct qstr qn = QSTR_INIT(name, strlen(name));
 		struct page *pg = NULL;
 		void *de;
 
 		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-		iget_fn = (void *)kallsyms_lookup_name("f2fs_iget");
 
-		if (fe_fn && de_fn && iget_fn) {
+		if (fe_fn && de_fn) {
 			de = fe_fn(p_inode, &qn, &pg);
-			pr_info("susfs: ensure_dir stale de=%p pg=%p\n", de, pg);
+			pr_info("susfs: ensure_dir found entry de=%p pg=%p\n",
+				de, pg);
 
 			if (de && pg && !IS_ERR(pg)) {
-				unsigned long ino = *(const __le32 *)
-					((const u8 *)de + 4);
-				struct inode *test = iget_fn(
-					p_inode->i_sb, le32_to_cpu(ino));
-				pr_info("susfs: ensure_dir stale ino=%lu "
-					"test=%p\n", le32_to_cpu(ino), test);
-				if (IS_ERR(test)) {
-					pr_info("susfs: removing stale entry "
-						"'%s' (ino=%lu err=%ld)\n",
-						name, le32_to_cpu(ino),
-						PTR_ERR(test));
-					de_fn(de, pg, p_inode, NULL);
-					/* Retry mkdir after cleanup */
-					dput(d);
-					d = d_alloc_name(parent_p.dentry,
-							 name);
-					if (d) {
-						inode_lock_nested(p_inode,
-							I_MUTEX_PARENT);
-						err = vfs_mkdir(p_inode, d,
-								 0755);
-						inode_unlock(p_inode);
-						pr_info("susfs: ensure_dir "
-							"retry err=%d\n", err);
-					}
-				} else {
-					iput(test);
-					put_page(pg);
+				ino = *(const __le32 *)((const u8 *)de + 4);
+				pr_info("susfs: deleting entry '%s' ino=%lu\n",
+					name, le32_to_cpu(ino));
+				de_fn(de, pg, p_inode, NULL);
+
+				/* Retry mkdir after deletion */
+				dput(d);
+				d = d_alloc_name(parent_p.dentry, name);
+				if (d) {
+					inode_lock_nested(p_inode,
+						I_MUTEX_PARENT);
+					err = vfs_mkdir(p_inode, d, 0755);
+					inode_unlock(p_inode);
+					pr_info("susfs: ensure_dir retry "
+						"err=%d\n", err);
 				}
 			} else if (pg && !IS_ERR(pg)) {
 				put_page(pg);
