@@ -90,9 +90,13 @@ static int susfs_mark_inode_sus_map(const char *path)
 }
 
 /* ── collector: collect module IDs from modules_update/ ────────── */
+#define SUSFS_MAX_STAGING 16
+#define SUSFS_NAME_MAX 128
+
 struct susfs_collect_ctx {
 	struct dir_context ctx;
-	char names[16][256];
+	char (*names)[SUSFS_NAME_MAX];
+	int capacity;
 	int count;
 };
 
@@ -105,14 +109,12 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 
 	if (name[0] == '.')
 		return 0;
-	/* Skip non-directories (files). F2FS may report DT_UNKNOWN,
-	 * but rename_one will still skip them later via kern_path. */
 	if (d_type != DT_DIR && d_type != DT_UNKNOWN)
 		return 0;
-	if (c->count >= 16)
+	if (c->count >= c->capacity)
 		return 0; /* safety limit */
-	memcpy(c->names[c->count], name, namlen);
-	c->names[c->count][namlen] = '\0';
+	memcpy(c->names[c->count], name, min((size_t)namlen, sizeof(c->names[0]) - 1));
+	c->names[c->count][min((size_t)namlen, sizeof(c->names[0]) - 1)] = '\0';
 	c->count++;
 	return 0;
 }
@@ -178,8 +180,11 @@ static void susfs_move_one(const char *name)
 void susfs_apply_module_updates(void)
 {
 	struct file *dir;
+	char (*names)[SUSFS_NAME_MAX];
 	struct susfs_collect_ctx cctx = {
 		.ctx.actor = susfs_collect_actor,
+		.names = NULL,
+		.capacity = SUSFS_MAX_STAGING,
 		.count = 0,
 	};
 	int i;
@@ -190,15 +195,27 @@ void susfs_apply_module_updates(void)
 		return;
 	}
 	pr_debug("susfs: collecting module IDs from staging...\n");
-	iterate_dir(dir, &cctx.ctx);
-	filp_close(dir, NULL); /* close BEFORE moving to avoid stale dentries */
 
-	if (cctx.count == 0)
+	names = kmalloc(SUSFS_MAX_STAGING * SUSFS_NAME_MAX, GFP_KERNEL);
+	if (!names) {
+		pr_debug("susfs: kmalloc failed\n");
+		filp_close(dir, NULL);
 		return;
+	}
+	cctx.names = names;
+
+	iterate_dir(dir, &cctx.ctx);
+	filp_close(dir, NULL);
+
+	if (cctx.count == 0) {
+		kfree(names);
+		return;
+	}
 
 	pr_debug("susfs: moving %d module(s) to active...\n", cctx.count);
 	for (i = 0; i < cctx.count; i++)
 		susfs_move_one(cctx.names[i]);
+	kfree(names);
 	pr_debug("susfs: module updates done\n");
 }
 #endif /* CONFIG_KSU_SUSFS */
@@ -231,6 +248,7 @@ def main():
         '#ifdef CONFIG_KSU_SUSFS\n'
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
+        '#include <linux/slab.h>\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
