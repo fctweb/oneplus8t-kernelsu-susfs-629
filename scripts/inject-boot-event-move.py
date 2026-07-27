@@ -20,36 +20,19 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* ksu_cred (KSU root credentials, from core/init.c) */
-extern struct cred *ksu_cred;
-
-static void susfs_ensure_dir(const char *parent, const char *name)
-{
-	struct path parent_p;
-	struct dentry *d;
-	const struct cred *saved;
-
-	if (kern_path(parent, 0, &parent_p))
-		return;
-	saved = override_creds(ksu_cred);
-	d = lookup_one_len(name, parent_p.dentry, strlen(name));
-	if (!IS_ERR(d)) {
-		if (!d_really_is_positive(d))
-			vfs_mkdir(parent_p.dentry->d_inode, d, 0755);
-		dput(d);
-	}
-	revert_creds(saved);
-	path_put(&parent_p);
-}
-
 static void susfs_restore_boot(void)
 {
 	int i;
 
-	/* Ensure modules dirs exist BEFORE susfs_add_sus_path_kernel,
-	 * otherwise kern_path() fails and SUSFS hiding is never applied. */
-	susfs_ensure_dir("/data/adb", "modules");
-	susfs_ensure_dir("/data/adb", "modules_update");
+	/* Ensure /data/adb/modules/ and /data/adb/modules_update/ exist BEFORE
+	 * susfs_add_sus_path_kernel, otherwise kern_path() fails and SUSFS
+	 * hiding is never applied.  Use call_usermodehelper to bypass SELinux
+	 * and dcache issues with vfs_mkdir from init context. */
+	call_usermodehelper("/system/bin/mkdir",
+			    (char *[]){"mkdir", "-p",
+				       "/data/adb/modules/",
+				       "/data/adb/modules_update/", NULL},
+			    NULL, UMH_WAIT_PROC);
 
 	{
 		static const char * const paths[] = {
