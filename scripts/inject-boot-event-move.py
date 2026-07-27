@@ -20,87 +20,26 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Bypass broken f2fs_lookup by allocating dentry directly and calling
- * vfs_mkdir.  On f2fs, a stale inline-dentry entry (orphaned inode)
- * causes f2fs_lookup → f2fs_iget to return -ENOENT, blocking mkdir.
- * d_alloc_name + vfs_mkdir avoids calling f2fs_lookup entirely.
- * If f2fs_mkdir's internal add_link detects the stale entry we also
- * try f2fs_find_entry + f2fs_delete_entry to clean it up first. */
+/* Ensure a directory exists at parent_path/name by running mkdir -p
+ * via call_usermodehelper.  This is the ONLY reliable way to create
+ * directories on encrypted f2fs from init context: the process runs
+ * in userspace with full VFS access (including fscrypt), which
+ * bypasses all the stale-entry / encryption-context issues that
+ * plague vfs_mkdir and d_alloc_name from PID 1. */
 static void susfs_ensure_dir(const char *parent_path, const char *name)
 {
-	struct path parent_p;
-	struct dentry *d;
-	struct inode *p_inode;
+	char path[256];
+	char *argv[4];
 	int err;
 
-	if (kern_path(parent_path, 0, &parent_p)) {
-		pr_info("susfs: ensure_dir kern_path fail %s\n", parent_path);
-		return;
-	}
-	p_inode = d_inode(parent_p.dentry);
-	if (!p_inode) {
-		pr_info("susfs: ensure_dir no inode %s\n", parent_path);
-		path_put(&parent_p);
-		return;
-	}
-
-	d = d_alloc_name(parent_p.dentry, name);
-	if (!d) {
-		pr_info("susfs: ensure_dir d_alloc fail %s/%s\n",
-			parent_path, name);
-		path_put(&parent_p);
-		return;
-	}
-
-	inode_lock_nested(p_inode, I_MUTEX_PARENT);
-	err = vfs_mkdir(p_inode, d, 0755);
-	inode_unlock(p_inode);
-	pr_info("susfs: ensure_dir vfs_mkdir '%s/%s' err=%d\n",
-		parent_path, name, err);
-
-	if (err == -EEXIST) {
-		/* Entry exists on-disk in f2fs dentry block but is
-		 * INACCESSIBLE from userspace (f2fs_lookup returns
-		 * an error from user context, possibly due to fscrypt
-		 * context mismatch).  Delete it via f2fs_find_entry +
-		 * f2fs_delete_entry, then retry mkdir. */
-		void *(*fe_fn)(struct inode *, const struct qstr *,
-			       struct page **);
-		void *(*de_fn)(void *, struct page *, struct inode *,
-			      struct inode *);
-		struct qstr qn = QSTR_INIT(name, strlen(name));
-		struct page *pg = NULL;
-		void *de;
-
-		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-
-		if (fe_fn && de_fn) {
-			de = fe_fn(p_inode, &qn, &pg);
-			if (de && pg && !IS_ERR(pg)) {
-				unsigned long ino __maybe_unused =
-					*(const __le32 *)((const u8 *)de + 4);
-				pr_info("susfs: deleting stale entry "
-					"'%s' ino=%lu\n",
-					name, le32_to_cpu(ino));
-				de_fn(de, pg, p_inode, NULL);
-				dput(d);
-				d = d_alloc_name(parent_p.dentry, name);
-				if (d) {
-					inode_lock_nested(p_inode,
-						I_MUTEX_PARENT);
-					err = vfs_mkdir(p_inode, d, 0755);
-					inode_unlock(p_inode);
-					pr_info("susfs: ensure_dir retry "
-						"err=%d\n", err);
-				}
-			} else if (pg && !IS_ERR(pg)) {
-				put_page(pg);
-			}
-		}
-	}
-	dput(d);
-	path_put(&parent_p);
+	scnprintf(path, sizeof(path), "%s/%s", parent_path, name);
+	argv[0] = "mkdir";
+	argv[1] = "-p";
+	argv[2] = path;
+	argv[3] = NULL;
+	err = call_usermodehelper("/system/bin/mkdir", argv, NULL,
+				  UMH_WAIT_PROC);
+	pr_info("susfs: ensure_dir 'mkdir -p %s' err=%d\n", path, err);
 }
 
 static void susfs_restore_boot(void)
