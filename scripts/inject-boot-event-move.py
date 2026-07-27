@@ -1,24 +1,21 @@
 #!/usr/bin/env python3
 """Inject ALL SUSFS boot restore + module move code into boot_event.c.
-Complete replacement for fix_boot_event_properties.patch's boot_event.c hunks.
+Replaces the old fix_boot_event_properties.patch approach.
 
-Adds:
-  1. #include <uapi/linux/fs.h>
-  2. susfs_restore_boot() call inside on_post_fs_data()
-  3. Complete code block: susfs_restore_boot(), susfs_is_boot_restored(),
-     susfs_mark_inode_sus_map(), susfs_rename_one(), susfs_rename_actor(),
-     susfs_apply_module_updates()
+Adds into on_post_fs_data():
+  - susfs_restore_boot() call
+
+Appends at file end:
+  - susfs_restore_boot() full impl with paths/mounts/maps/props
+  - susfs_is_boot_restored()
+  - susfs_rename_one(), susfs_rename_actor(), susfs_apply_module_updates()
 
 Usage: python3 inject-boot-event-move.py <kernel-root>
 """
 
 import sys, os
 
-SUSFS_CODE_BLOCK = r"""
-#ifdef CONFIG_KSU_SUSFS
-#include <uapi/linux/fs.h>
-extern void susfs_apply_module_updates(void);
-#endif
+SUSFS_BLOCK = r"""
 
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
@@ -65,10 +62,6 @@ static void susfs_restore_boot(void)
 #endif
 
 	susfs_restore_properties();
-
-	/* Move any modules left in staging (modules_update/) to active (modules/).
-	 * Replaces handle_updated_modules() which never runs because
-	 * init.rc exec injection is broken on this ROM (LineageOS 13). */
 	susfs_apply_module_updates();
 
 	susfs_boot_restored = true;
@@ -96,9 +89,6 @@ static int susfs_mark_inode_sus_map(const char *path)
 	return 0;
 }
 
-/* Move module from staging to active:
- *   rename(modules_update/<name>/, modules/<name>/)
- * If the target exists, use RENAME_EXCHANGE to atomically swap. */
 static int susfs_rename_one(const char *name, int namlen)
 {
 	char old_path[256], new_path[256];
@@ -110,8 +100,7 @@ static int susfs_rename_one(const char *name, int namlen)
 	scnprintf(new_path, sizeof(new_path), "/data/adb/modules/%s", name);
 
 	err = kern_path(old_path, 0, &old_p);
-	if (err)
-		return 0; /* source disappeared, skip */
+	if (err) return 0;
 
 	if (kern_path("/data/adb/modules", 0, &modules_dir)) {
 		path_put(&old_p);
@@ -151,8 +140,7 @@ static int susfs_rename_actor(struct dir_context *ctx, const char *name,
 			      int namlen, loff_t offset, u64 ino,
 			      unsigned int d_type)
 {
-	if (name[0] == '.')
-		return 0;
+	if (name[0] == '.') return 0;
 	susfs_rename_one(name, namlen);
 	return 0;
 }
@@ -160,16 +148,13 @@ static int susfs_rename_actor(struct dir_context *ctx, const char *name,
 void susfs_apply_module_updates(void)
 {
 	struct file *dir;
-	struct susfs_rename_ctx rctx = {
-		.ctx.actor = susfs_rename_actor,
-	};
+	struct susfs_rename_ctx rctx = { .ctx.actor = susfs_rename_actor, };
 
 	dir = filp_open("/data/adb/modules_update/", O_RDONLY | O_DIRECTORY, 0);
 	if (IS_ERR(dir)) {
 		pr_debug("susfs: modules_update not found (no staging)\n");
 		return;
 	}
-
 	pr_debug("susfs: applying module updates...\n");
 	iterate_dir(dir, &rctx.ctx);
 	filp_close(dir, NULL);
@@ -197,63 +182,58 @@ def main():
         print("  already injected, skipping")
         return
 
-    # 1. Add #include <uapi/linux/fs.h> after #include <linux/printk.h>
-    content = content.replace(
-        '#include <linux/printk.h>',
-        '#include <linux/printk.h>\n#include <uapi/linux/fs.h>', 1)
+    lines = content.split('\n')
 
-    # 2. Find on_post_fs_data() and inject susfs_restore_boot() call
-    #    Pattern: after ksu_stop_input_hook_runtime(); and before }
-    stop_hook = 'ksu_stop_input_hook_runtime();'
-    pos = content.find(stop_hook)
-    if pos > 0:
-        insert_pos = pos + len(stop_hook)
-        call_block = (
-            '\n#ifdef CONFIG_KSU_SUSFS\n'
-            '\tsusfs_restore_boot();\n'
-            '#endif')
-        content = content[:insert_pos] + call_block + content[insert_pos:]
-        print("  Inserted susfs_restore_boot() call in on_post_fs_data()")
+    # 1. Add SUSFS includes after #include <linux/printk.h>
+    include_marker = '#include <linux/printk.h>'
+    susfs_includes = (
+        '#ifdef CONFIG_KSU_SUSFS\n'
+        '#include <linux/susfs.h>\n'
+        '#include <uapi/linux/fs.h>\n'
+        'extern void susfs_restore_properties(void);\n'
+        'extern void susfs_apply_module_updates(void);\n'
+        '#endif')
+    for i, line in enumerate(lines):
+        if line.strip() == include_marker:
+            # Insert after this line
+            insert = i + 1
+            for extra_line in reversed(susfs_includes.split('\n')):
+                lines.insert(insert, extra_line)
+            print(f"  Added SUSFS includes after {include_marker}")
+            break
     else:
-        print("  WARNING: ksu_stop_input_hook_runtime(); not found")
+        print(f"  WARNING: {include_marker} not found")
 
-    # 3. Find the SUSFS include block #endif and insert all code after it
-    #    The block looks like:
-    #      #ifdef CONFIG_KSU_SUSFS
-    #      #include <linux/susfs.h>
-    #      extern void susfs_restore_properties(void);
-    #      #endif
-    #    We find this #endif and insert our code block after it.
-    #    But we need the LAST #endif in the include area, not the end-of-file one.
-    #    Strategy: find "#endif" after "susfs_restore_properties" and before "bool ksu_module_mounted"
-    marker_end = content.find('bool ksu_module_mounted')
-    susfs_restore_props = content.find('susfs_restore_properties(void);')
-
-    if susfs_restore_props > 0 and marker_end > susfs_restore_props:
-        # Find the #endif that closes this block
-        block_end = content.find('#endif', susfs_restore_props, marker_end)
-        if block_end > 0:
-            # The #endif is at block_end, extend to include the newline
-            eol = content.find('\n', block_end)
-            if eol > block_end:
-                insert_after = eol + 1
-            else:
-                insert_after = block_end + len('#endif')
-            content = content[:insert_after] + '\n' + SUSFS_CODE_BLOCK + content[insert_after:]
-            print("  Injected complete SUSFS code block after include #endif")
-        else:
-            print("  WARNING: #endif after susfs_restore_properties not found")
+    # 2. Add susfs_restore_boot() call after stop_input_hook();
+    for i, line in enumerate(lines):
+        if 'stop_input_hook();' in line:
+            insert = i + 1
+            call_block = [
+                '#ifdef CONFIG_KSU_SUSFS',
+                '\tsusfs_restore_boot();',
+                '#endif']
+            for extra_line in reversed(call_block):
+                lines.insert(insert, extra_line)
+            print("  Added susfs_restore_boot() call after stop_input_hook()")
+            break
     else:
-        print("  WARNING: SUSFS include block markers not found")
+        print("  WARNING: stop_input_hook(); not found")
+
+    # 3. Append SUSFS code block at end of file
+    lines.append('')
+    for line in SUSFS_BLOCK.split('\n'):
+        lines.append(line)
+    print("  Appended SUSFS functions block at end of file")
+
+    content = '\n'.join(lines)
 
     with open(path, 'w') as f:
         f.write(content)
 
     print("  === Verification ===")
-    for keyword in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
-                    'susfs_restore_boot', 'susfs_rename_one']:
-        count = content.count(keyword)
-        print(f"  {keyword}: {count}")
+    for kw in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
+               'susfs_restore_boot', 'susfs_rename_one']:
+        print(f"  {kw}: {content.count(kw)}")
 
 if __name__ == '__main__':
     main()

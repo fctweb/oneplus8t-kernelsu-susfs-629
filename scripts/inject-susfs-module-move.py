@@ -39,13 +39,13 @@ def main():
     # 2. Add susfs_apply_module_updates() call inside anon_ksu_release()
     old_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
 {
-\tpr_debug("ksu fd released\\n");
+\tpr_info("ksu fd released\\n");
 \treturn 0;
 }'''
 
     new_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
 {
-\tpr_debug("ksu fd released\\n");
+\tpr_info("ksu fd released\\n");
 #ifdef CONFIG_KSU_SUSFS
 \t/* Module install just completed (libksud.so closing its KSU fd).
 \t * Move any staging modules to active immediately. */
