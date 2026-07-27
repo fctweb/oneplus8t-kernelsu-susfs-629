@@ -54,7 +54,9 @@ def main():
     work_decl += '\n#ifdef CONFIG_KSU_SUSFS\n'
     work_decl += '/* Deferred staging→active move — runs in workqueue thread */\n'
     work_decl += 'static void susfs_move_workfn(struct work_struct *work)\n{\n'
-    work_decl += '\tsusfs_apply_module_updates();\n}\n'
+    work_decl += '\tpr_info("susfs: workqueue: move_workfn started\\n");\n'
+    work_decl += '\tsusfs_apply_module_updates();\n'
+    work_decl += '\tpr_info("susfs: workqueue: move_workfn done\\n");\n}\n'
     work_decl += 'static DECLARE_WORK(susfs_move_work, susfs_move_workfn);\n'
     work_decl += '#endif\n'
     new_include = old_include + work_decl
@@ -73,7 +75,9 @@ def main():
 {
 \tpr_info("ksu fd released\\n");
 #ifdef CONFIG_KSU_SUSFS
+\tpr_info("susfs: fd release: scheduling move_work\\n");
 \tschedule_work(&susfs_move_work);
+\tpr_info("susfs: fd release: move_work scheduled\\n");
 #endif
 \treturn 0;
 }'''

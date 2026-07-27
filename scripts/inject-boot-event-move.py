@@ -112,7 +112,8 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 	if (d_type != DT_DIR && d_type != DT_UNKNOWN)
 		return 0;
 	if (c->count >= c->capacity)
-		return 0; /* safety limit */
+		return 0;
+	pr_info("susfs: collect found '%s' (d_type=%u)\n", name, d_type);
 	memcpy(c->names[c->count], name, min((size_t)namlen, sizeof(c->names[0]) - 1));
 	c->names[c->count][min((size_t)namlen, sizeof(c->names[0]) - 1)] = '\0';
 	c->count++;
@@ -126,6 +127,8 @@ static void susfs_move_one(const char *name)
 	struct path old_p = {}, new_p = {}, modules_dir = {};
 	struct dentry *new_dentry;
 	int err, namlen = strlen(name);
+
+	pr_info("susfs: move_one '%s' begin\n", name);
 
 	scnprintf(old_path, sizeof(old_path), "/data/adb/modules_update/%s", name);
 	scnprintf(new_path, sizeof(new_path), "/data/adb/modules/%s", name);
@@ -175,6 +178,7 @@ static void susfs_move_one(const char *name)
 	dput(new_dentry);
 	path_put(&modules_dir);
 	path_put(&old_p);
+	pr_info("susfs: move_one '%s' done (err=%d)\n", name, err);
 }
 
 void susfs_apply_module_updates(void)
