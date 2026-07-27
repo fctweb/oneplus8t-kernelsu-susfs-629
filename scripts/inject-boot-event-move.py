@@ -20,51 +20,99 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-static void susfs_fixup_stale_f2fs_entry(const char *parent_path,
-					  const char *name)
+/* Bypass broken f2fs_lookup by allocating dentry directly and calling
+ * vfs_mkdir.  On f2fs, a stale inline-dentry entry (orphaned inode)
+ * causes f2fs_lookup → f2fs_iget to return -ENOENT, blocking mkdir.
+ * d_alloc_name + vfs_mkdir avoids calling f2fs_lookup entirely.
+ * If f2fs_mkdir's internal add_link detects the stale entry we also
+ * try f2fs_find_entry + f2fs_delete_entry to clean it up first. */
+static void susfs_ensure_dir(const char *parent_path, const char *name)
 {
-	void *(*find_entry)(struct inode *, const struct qstr *,
-			    struct page **);
-	void (*delete_entry)(void *, struct page *, struct inode *,
-			     struct inode *);
-	struct inode *(*f2fs_iget_fn)(struct super_block *, unsigned long);
 	struct path parent_p;
-	struct page *res_page = NULL;
-	void *de;
-	struct inode *dir;
-	struct qstr qname = QSTR_INIT(name, strlen(name));
+	struct dentry *d;
+	struct inode *p_inode;
+	int err;
 
-	find_entry = (void *)kallsyms_lookup_name("f2fs_find_entry");
-	delete_entry = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-	f2fs_iget_fn = (void *)kallsyms_lookup_name("f2fs_iget");
-
-	if (!find_entry || !delete_entry || !f2fs_iget_fn) {
-		pr_info("susfs: stale-entry cleanup unavailable\n");
+	if (kern_path(parent_path, 0, &parent_p)) {
+		pr_info("susfs: ensure_dir kern_path fail %s\n", parent_path);
 		return;
 	}
-	if (kern_path(parent_path, 0, &parent_p))
-		return;
-	dir = d_inode(parent_p.dentry);
-	if (!dir) {
+	p_inode = d_inode(parent_p.dentry);
+	if (!p_inode) {
+		pr_info("susfs: ensure_dir no inode %s\n", parent_path);
 		path_put(&parent_p);
 		return;
 	}
-	de = find_entry(dir, &qname, &res_page);
-	if (de && res_page && !IS_ERR(res_page)) {
-		/* ino at byte-offset 4 in the packed f2fs_dir_entry */
-		unsigned long ino = *(const __le32 *)((const u8 *)de + 4);
-		struct inode *test = f2fs_iget_fn(dir->i_sb, le32_to_cpu(ino));
-		if (IS_ERR(test)) {
-			pr_info("susfs: removing stale entry '%s' (ino=%lu err=%ld)\n",
-				name, le32_to_cpu(ino), PTR_ERR(test));
-			delete_entry(de, res_page, dir, NULL);
-		} else {
-			iput(test);
-			put_page(res_page);
-		}
-	} else if (res_page && !IS_ERR(res_page)) {
-		put_page(res_page);
+
+	d = d_alloc_name(parent_p.dentry, name);
+	if (!d) {
+		pr_info("susfs: ensure_dir d_alloc fail %s/%s\n",
+			parent_path, name);
+		path_put(&parent_p);
+		return;
 	}
+
+	inode_lock_nested(p_inode, I_MUTEX_PARENT);
+	err = vfs_mkdir(p_inode, d, 0755);
+	inode_unlock(p_inode);
+	pr_info("susfs: ensure_dir vfs_mkdir '%s/%s' err=%d\n",
+		parent_path, name, err);
+
+	if (err == -EEXIST) {
+		/* Stale entry exists — try to remove it via f2fs internals */
+		void *(*fe_fn)(struct inode *, const struct qstr *,
+			       struct page **);
+		void (*de_fn)(void *, struct page *, struct inode *,
+			      struct inode *);
+		struct inode *(*iget_fn)(struct super_block *, unsigned long);
+		struct qstr qn = QSTR_INIT(name, strlen(name));
+		struct page *pg = NULL;
+		void *de;
+
+		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+		iget_fn = (void *)kallsyms_lookup_name("f2fs_iget");
+
+		if (fe_fn && de_fn && iget_fn) {
+			de = fe_fn(p_inode, &qn, &pg);
+			pr_info("susfs: ensure_dir stale de=%p pg=%p\n", de, pg);
+
+			if (de && pg && !IS_ERR(pg)) {
+				unsigned long ino = *(const __le32 *)
+					((const u8 *)de + 4);
+				struct inode *test = iget_fn(
+					p_inode->i_sb, le32_to_cpu(ino));
+				pr_info("susfs: ensure_dir stale ino=%lu "
+					"test=%p\n", le32_to_cpu(ino), test);
+				if (IS_ERR(test)) {
+					pr_info("susfs: removing stale entry "
+						"'%s' (ino=%lu err=%ld)\n",
+						name, le32_to_cpu(ino),
+						PTR_ERR(test));
+					de_fn(de, pg, p_inode, NULL);
+					/* Retry mkdir after cleanup */
+					dput(d);
+					d = d_alloc_name(parent_p.dentry,
+							 name);
+					if (d) {
+						inode_lock_nested(p_inode,
+							I_MUTEX_PARENT);
+						err = vfs_mkdir(p_inode, d,
+								 0755);
+						inode_unlock(p_inode);
+						pr_info("susfs: ensure_dir "
+							"retry err=%d\n", err);
+					}
+				} else {
+					iput(test);
+					put_page(pg);
+				}
+			} else if (pg && !IS_ERR(pg)) {
+				put_page(pg);
+			}
+		}
+	}
+	dput(d);
 	path_put(&parent_p);
 }
 
@@ -72,12 +120,11 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
-	/* Clean up stale f2fs entries that would block mkdir.
-	 * On f2fs, a stale directory entry (orphaned inode) causes
-	 * f2fs_lookup → f2fs_iget to return -ENOENT, preventing any
-	 * subsequent directory creation at that name. */
-	susfs_fixup_stale_f2fs_entry("/data/adb", "modules");
-	susfs_fixup_stale_f2fs_entry("/data/adb", "modules_update");
+	/* Ensure /data/adb/modules/ and /data/adb/modules_update/ exist.
+	 * We use d_alloc_name + vfs_mkdir to bypass a broken f2fs_lookup
+	 * caused by stale inline-dentry entries (orphaned inodes). */
+	susfs_ensure_dir("/data/adb", "modules");
+	susfs_ensure_dir("/data/adb", "modules_update");
 
 	{
 		static const char * const paths[] = {
@@ -357,7 +404,7 @@ def main():
     print("  === Verification ===")
     for kw in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
                'susfs_restore_boot', 'susfs_move_one', 'susfs_collect_actor',
-               'susfs_fixup_stale_f2fs_entry']:
+               'susfs_ensure_dir', 'susfs_fixup_stale_f2fs_entry']:
         print(f"  {kw}: {content.count(kw)}")
 
 if __name__ == '__main__':
