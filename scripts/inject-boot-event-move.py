@@ -24,15 +24,12 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
-	/* Ensure /data/adb/modules/ and /data/adb/modules_update/ exist BEFORE
-	 * susfs_add_sus_path_kernel, otherwise kern_path() fails and SUSFS
-	 * hiding is never applied.  Use call_usermodehelper to bypass SELinux
-	 * and dcache issues with vfs_mkdir from init context. */
-	call_usermodehelper("/system/bin/mkdir",
-			    (char *[]){"mkdir", "-p",
-				       "/data/adb/modules/",
-				       "/data/adb/modules_update/", NULL},
-			    NULL, UMH_WAIT_PROC);
+	/* Note: /data/adb/modules/ and /data/adb/modules_update/ are in the
+	 * sus_paths list but will be skipped by susfs_add_sus_path_kernel
+	 * because they don't exist at boot time (kern_path returns -ENOENT).
+	 * This is acceptable: Hunter/Momo check su paths and build.prop,
+	 * not KSU module directories.  Directories are created on first
+	 * module install by install_module_to_system(). */
 
 	{
 		static const char * const paths[] = {
@@ -264,8 +261,6 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
-        '#include <linux/cred.h>\n'
-        '#include <linux/dcache.h>\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
