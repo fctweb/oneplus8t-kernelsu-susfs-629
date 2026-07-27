@@ -140,30 +140,13 @@ static void susfs_move_one(const char *name)
 	}
 	pr_info("susfs: move_one '%s' source found\n", name);
 
-	/* Ensure /data/adb/modules/ exists (create if first module install) */
+	/* Skip if /data/adb/modules/ doesn't exist — will be created on next
+	 * module install by install_module_to_system().  vfs_mkdir from PID 1
+	 * context is unreliable due to dentry cache and locking semantics. */
 	if (kern_path("/data/adb/modules", 0, &modules_dir)) {
-		pr_info("susfs: move_one '%s' modules/ not found, creating\n", name);
-		struct path adb_dir;
-		if (!kern_path("/data/adb", 0, &adb_dir)) {
-			new_dentry = lookup_one_len("modules", adb_dir.dentry, 7);
-			if (!IS_ERR(new_dentry)) {
-				int mkerr = vfs_mkdir(adb_dir.dentry->d_inode, new_dentry, 0755);
-				pr_info("susfs: move_one '%s' vfs_mkdir returned %d\n", name, mkerr);
-				dput(new_dentry);
-			} else {
-				pr_info("susfs: move_one '%s' lookup_one_len failed\n", name);
-			}
-			path_put(&adb_dir);
-		} else {
-			pr_info("susfs: move_one '%s' /data/adb/ not found\n", name);
-		}
-		/* Retry after creating it */
-		if (kern_path("/data/adb/modules", 0, &modules_dir)) {
-			pr_info("susfs: move_one '%s' modules/ still not found after mkdir\n", name);
-			path_put(&old_p);
-			return;
-		}
-		pr_info("susfs: move_one '%s' modules/ found after mkdir\n", name);
+		pr_info("susfs: move_one '%s' modules/ missing, deferring\n", name);
+		path_put(&old_p);
+		return;
 	}
 
 	new_dentry = lookup_one_len(name, modules_dir.dentry, namlen);
