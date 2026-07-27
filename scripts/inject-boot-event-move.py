@@ -26,90 +26,9 @@ static bool susfs_boot_restored __read_mostly = false;
  * in userspace with full VFS access (including fscrypt), which
  * bypasses all the stale-entry / encryption-context issues that
  * plague vfs_mkdir and d_alloc_name from PID 1. */
-static void susfs_ensure_dir(const char *parent_path, const char *name)
-{
-	struct path parent_p;
-	struct dentry *d;
-	struct inode *p_inode;
-	int err;
-
-	if (kern_path(parent_path, 0, &parent_p)) {
-		pr_info("susfs: ensure_dir kern_path fail %s\n", parent_path);
-		return;
-	}
-	p_inode = d_inode(parent_p.dentry);
-	if (!p_inode) {
-		path_put(&parent_p);
-		return;
-	}
-
-	d = d_alloc_name(parent_p.dentry, name);
-	if (!d) {
-		path_put(&parent_p);
-		return;
-	}
-
-	inode_lock_nested(p_inode, I_MUTEX_PARENT);
-	err = vfs_mkdir(p_inode, d, 0755);
-	inode_unlock(p_inode);
-	pr_info("susfs: ensure_dir vfs_mkdir '%s/%s' err=%d\n",
-		parent_path, name, err);
-
-	if (err == -EEXIST) {
-		/* Delete stale entry via f2fs, then retry */
-		void *(*fe_fn)(struct inode *, const struct qstr *,
-			       struct page **);
-		void *(*de_fn)(void *, struct page *, struct inode *,
-			      struct inode *);
-		struct qstr qn = QSTR_INIT(name, strlen(name));
-		struct page *pg = NULL;
-		void *de;
-
-		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-		if (fe_fn && de_fn) {
-			de = fe_fn(p_inode, &qn, &pg);
-			if (de && pg && !IS_ERR(pg)) {
-				de_fn(de, pg, p_inode, NULL);
-				dput(d);
-				d = d_alloc_name(parent_p.dentry, name);
-				if (d) {
-					inode_lock_nested(p_inode,
-						I_MUTEX_PARENT);
-					err = vfs_mkdir(p_inode, d, 0755);
-					inode_unlock(p_inode);
-					pr_info("susfs: ensure_dir retry "
-						"err=%d\n", err);
-				}
-			} else if (pg && !IS_ERR(pg)) {
-				put_page(pg);
-			}
-		}
-	}
-
-	if (!err) {
-		/* vfs_mkdir succeeded but the new inode's NAT entry may
-		 * not be on disk yet (no checkpoint issued).  If the
-		 * inode gets evicted from cache before the next
-		 * checkpoint, f2fs_iget → read_node_page returns -ENOENT
-		 * (ni.blk_addr == NULL_ADDR).  Force a sync so the NAT
-		 * is committed. */
-		sync_filesystem(p_inode->i_sb);
-	}
-
-	dput(d);
-	path_put(&parent_p);
-}
-
 static void susfs_restore_boot(void)
 {
 	int i;
-
-	/* Ensure /data/adb/modules/ and /data/adb/modules_update/ exist.
-	 * We use d_alloc_name + vfs_mkdir to bypass a broken f2fs_lookup
-	 * caused by stale inline-dentry entries (orphaned inodes). */
-	susfs_ensure_dir("/data/adb", "modules");
-	susfs_ensure_dir("/data/adb", "modules_update");
 
 	{
 		static const char * const paths[] = {
@@ -389,7 +308,7 @@ def main():
     print("  === Verification ===")
     for kw in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
                'susfs_restore_boot', 'susfs_move_one', 'susfs_collect_actor',
-               'susfs_ensure_dir', 'susfs_fixup_stale_f2fs_entry']:
+               'susfs_fixup_stale_f2fs_entry']:
         print(f"  {kw}: {content.count(kw)}")
 
 if __name__ == '__main__':
