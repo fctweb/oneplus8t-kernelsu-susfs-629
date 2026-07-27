@@ -20,16 +20,63 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
+static void susfs_fixup_stale_f2fs_entry(const char *parent_path,
+					  const char *name)
+{
+	struct f2fs_dir_entry *(*find_entry)(struct inode *,
+					const struct qstr *, struct page **);
+	void (*delete_entry)(struct f2fs_dir_entry *, struct page *,
+			     struct inode *, struct inode *);
+	struct inode *(*f2fs_iget)(struct super_block *, unsigned long);
+	struct path parent_p;
+	struct page *res_page = NULL;
+	struct f2fs_dir_entry *de;
+	struct inode *dir;
+	struct qstr qname;
+
+	find_entry = (void *)kallsyms_lookup_name("f2fs_find_entry");
+	delete_entry = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+	f2fs_iget = (void *)kallsyms_lookup_name("f2fs_iget");
+
+	if (!find_entry || !delete_entry || !f2fs_iget) {
+		pr_info("susfs: stale-entry cleanup unavailable\n");
+		return;
+	}
+	if (kern_path(parent_path, 0, &parent_p))
+		return;
+	dir = d_inode(parent_p.dentry);
+	if (!dir) {
+		path_put(&parent_p);
+		return;
+	}
+	qname = QSTR_INIT(name, strlen(name));
+	de = find_entry(dir, &qname, &res_page);
+	if (de && res_page && !IS_ERR(res_page)) {
+		struct inode *test = f2fs_iget(dir->i_sb, le32_to_cpu(de->ino));
+		if (IS_ERR(test)) {
+			pr_info("susfs: removing stale entry '%s' (ino=%u err=%ld)\n",
+				name, le32_to_cpu(de->ino), PTR_ERR(test));
+			delete_entry(de, res_page, dir, NULL);
+		} else {
+			iput(test);
+			put_page(res_page);
+		}
+	} else if (res_page && !IS_ERR(res_page)) {
+		put_page(res_page);
+	}
+	path_put(&parent_p);
+}
+
 static void susfs_restore_boot(void)
 {
 	int i;
 
-	/* Note: /data/adb/modules/ and /data/adb/modules_update/ are in the
-	 * sus_paths list but will be skipped by susfs_add_sus_path_kernel
-	 * because they don't exist at boot time (kern_path returns -ENOENT).
-	 * This is acceptable: Hunter/Momo check su paths and build.prop,
-	 * not KSU module directories.  Directories are created on first
-	 * module install by install_module_to_system(). */
+	/* Clean up stale f2fs entries that would block mkdir.
+	 * On f2fs, a stale directory entry (orphaned inode) causes
+	 * f2fs_lookup → f2fs_iget to return -ENOENT, preventing any
+	 * subsequent directory creation at that name. */
+	susfs_fixup_stale_f2fs_entry("/data/adb", "modules");
+	susfs_fixup_stale_f2fs_entry("/data/adb", "modules_update");
 
 	{
 		static const char * const paths[] = {
@@ -261,6 +308,8 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
+        '#include <linux/f2fs_fs.h>\n'
+        '#include <linux/kallsyms.h>\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
@@ -307,7 +356,8 @@ def main():
 
     print("  === Verification ===")
     for kw in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
-               'susfs_restore_boot', 'susfs_move_one', 'susfs_collect_actor']:
+               'susfs_restore_boot', 'susfs_move_one', 'susfs_collect_actor',
+               'susfs_fixup_stale_f2fs_entry']:
         print(f"  {kw}: {content.count(kw)}")
 
 if __name__ == '__main__':
