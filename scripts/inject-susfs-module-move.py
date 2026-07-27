@@ -48,12 +48,21 @@ def main():
         print("  supercall.c already injected, skipping")
         return
 
-    # 2. Add #include "runtime/ksud_boot.h" after sulog/event.h
+    # 2. Add includes + workqueue declarations after sulog/event.h
     old_include = '#include "sulog/event.h"'
-    new_include = old_include + '\n#include "runtime/ksud_boot.h"'
+    work_decl = '\n#include <linux/workqueue.h>\n#include "runtime/ksud_boot.h"\n'
+    work_decl += '\n#ifdef CONFIG_KSU_SUSFS\n'
+    work_decl += '/* Deferred staging→active move — runs in workqueue thread */\n'
+    work_decl += 'static void susfs_move_workfn(struct work_struct *work)\n{\n'
+    work_decl += '\tsusfs_apply_module_updates();\n}\n'
+    work_decl += 'static DECLARE_WORK(susfs_move_work, susfs_move_workfn);\n'
+    work_decl += '#endif\n'
+    new_include = old_include + work_decl
     content = content.replace(old_include, new_include, 1)
 
-    # 3. Add susfs_apply_module_updates() call inside anon_ksu_release()
+    # 3. Replace anon_ksu_release() — use schedule_work instead of direct call.
+    #    VFS ops can sleep, but anon_ksu_release() is called from __close_fd()
+    #    which holds file_lock spinlock, making sleeping illegal.
     old_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
 {
 \tpr_info("ksu fd released\\n");
@@ -64,9 +73,7 @@ def main():
 {
 \tpr_info("ksu fd released\\n");
 #ifdef CONFIG_KSU_SUSFS
-\t/* Module install just completed (libksud.so closing its KSU fd).
-\t * Move any staging modules to active immediately. */
-\tsusfs_apply_module_updates();
+\tschedule_work(&susfs_move_work);
 #endif
 \treturn 0;
 }'''
