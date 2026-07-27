@@ -59,17 +59,27 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 		parent_path, name, err);
 
 	if (err == -EEXIST) {
-		/* A directory entry for 'name' already exists in the
-		 * on-disk f2fs dentry block, but it is INACCESSIBLE
-		 * from userspace (f2fs_lookup → f2fs_iget returns an
-		 * error or the inode's encryption context doesn't
-		 * match).  Delete it via f2fs_find_entry + f2fs_delete_entry,
-		 * regardless of whether f2fs_iget succeeds. */
+		/* Entry exists on disk.  Check if it is accessible
+		 * from VFS — if kern_path succeeds, it's a valid
+		 * existing directory and we must NOT delete it. */
+		char full[256];
+		struct path test_p;
+		scnprintf(full, sizeof(full), "%s/%s", parent_path, name);
+		if (kern_path(full, 0, &test_p) == 0) {
+			path_put(&test_p);
+			pr_info("susfs: ensure_dir '%s' exists (valid)\n",
+				full);
+			goto done;
+		}
+		pr_info("susfs: ensure_dir '%s' inaccessible — "
+			"deleting via f2fs\n", full);
+
+		/* Delete the inaccessible entry via f2fs_find_entry +
+		 * f2fs_delete_entry, then retry mkdir. */
 		void *(*fe_fn)(struct inode *, const struct qstr *,
 			       struct page **);
-		void (*de_fn)(void *, struct page *, struct inode *,
+		void *(*de_fn)(void *, struct page *, struct inode *,
 			      struct inode *);
-		unsigned long ino = 0;
 		struct qstr qn = QSTR_INIT(name, strlen(name));
 		struct page *pg = NULL;
 		void *de;
@@ -79,16 +89,8 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 
 		if (fe_fn && de_fn) {
 			de = fe_fn(p_inode, &qn, &pg);
-			pr_info("susfs: ensure_dir found entry de=%p pg=%p\n",
-				de, pg);
-
 			if (de && pg && !IS_ERR(pg)) {
-				ino = *(const __le32 *)((const u8 *)de + 4);
-				pr_info("susfs: deleting entry '%s' ino=%lu\n",
-					name, le32_to_cpu(ino));
 				de_fn(de, pg, p_inode, NULL);
-
-				/* Retry mkdir after deletion */
 				dput(d);
 				d = d_alloc_name(parent_p.dentry, name);
 				if (d) {
@@ -104,6 +106,7 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 			}
 		}
 	}
+done:
 	dput(d);
 	path_put(&parent_p);
 }
