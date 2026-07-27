@@ -59,22 +59,10 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 		parent_path, name, err);
 
 	if (err == -EEXIST) {
-		/* Entry exists on disk.  Check if it is accessible
-		 * from VFS — if kern_path succeeds, it's a valid
-		 * existing directory and we must NOT delete it. */
-		char full[256];
-		struct path test_p;
-		scnprintf(full, sizeof(full), "%s/%s", parent_path, name);
-		if (kern_path(full, 0, &test_p) == 0) {
-			path_put(&test_p);
-			pr_info("susfs: ensure_dir '%s' exists (valid)\n",
-				full);
-			goto done;
-		}
-		pr_info("susfs: ensure_dir '%s' inaccessible — "
-			"deleting via f2fs\n", full);
-
-		/* Delete the inaccessible entry via f2fs_find_entry +
+		/* Entry exists on-disk in f2fs dentry block but is
+		 * INACCESSIBLE from userspace (f2fs_lookup returns
+		 * an error from user context, possibly due to fscrypt
+		 * context mismatch).  Delete it via f2fs_find_entry +
 		 * f2fs_delete_entry, then retry mkdir. */
 		void *(*fe_fn)(struct inode *, const struct qstr *,
 			       struct page **);
@@ -90,6 +78,11 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 		if (fe_fn && de_fn) {
 			de = fe_fn(p_inode, &qn, &pg);
 			if (de && pg && !IS_ERR(pg)) {
+				unsigned long ino __maybe_unused =
+					*(const __le32 *)((const u8 *)de + 4);
+				pr_info("susfs: deleting stale entry "
+					"'%s' ino=%lu\n",
+					name, le32_to_cpu(ino));
 				de_fn(de, pg, p_inode, NULL);
 				dput(d);
 				d = d_alloc_name(parent_p.dentry, name);
@@ -106,7 +99,6 @@ static void susfs_ensure_dir(const char *parent_path, const char *name)
 			}
 		}
 	}
-done:
 	dput(d);
 	path_put(&parent_p);
 }
