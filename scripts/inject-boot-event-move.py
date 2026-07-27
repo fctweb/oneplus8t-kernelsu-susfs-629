@@ -206,9 +206,11 @@ def main():
     else:
         print(f"  WARNING: {include_marker} not found")
 
-    # 2. Add susfs_restore_boot() call after stop_input_hook();
+    # 2. Add susfs_restore_boot() call after the stop_input_hook() CALL
+    #    inside on_post_fs_data() (not the extern declaration at file level).
     for i, line in enumerate(lines):
-        if 'stop_input_hook();' in line:
+        # Match the call (indented with tab) not the extern declaration
+        if line.strip().startswith('stop_input_hook();') and not line.strip().startswith('extern'):
             insert = i + 1
             call_block = [
                 '#ifdef CONFIG_KSU_SUSFS',
