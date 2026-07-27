@@ -150,6 +150,13 @@ jobs:
           echo "=== Veritification ==="
           grep -c 'susfs_task_state' drivers/kernelsu/supercall/supercall.c 2>/dev/null || echo "0"
 
+      - name: Inject susfs_apply_module_updates in anon_ksu_release (staging→active move)
+        working-directory: kernel
+        run: |
+          python3 ../scripts/inject-susfs-module-move.py .
+          echo "=== Verification ==="
+          grep -n 'susfs_apply_module_updates' drivers/kernelsu/supercall/supercall.c 2>/dev/null || echo "NOT FOUND"
+
       - name: Fix SELinux domain initialization for builtin mode
         working-directory: kernel
         run: |
