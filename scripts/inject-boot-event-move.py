@@ -20,15 +20,45 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Ensure a directory exists at parent_path/name by running mkdir -p
- * via call_usermodehelper.  This is the ONLY reliable way to create
- * directories on encrypted f2fs from init context: the process runs
- * in userspace with full VFS access (including fscrypt), which
- * bypasses all the stale-entry / encryption-context issues that
- * plague vfs_mkdir and d_alloc_name from PID 1. */
+/* Delete a stale f2fs directory entry that is accessible via
+ * f2fs_find_entry but returns -ENOENT from userspace f2fs_lookup.
+ * After deletion, the KSU daemon (or mkdir from userspace) can
+ * create a fresh entry with proper fscrypt context. */
+static void susfs_cleanup_stale_entry(const char *parent_path,
+				       const char *name)
+{
+	void *(*fe_fn)(struct inode *, const struct qstr *,
+		       struct page **);
+	void *(*de_fn)(void *, struct page *, struct inode *,
+		      struct inode *);
+	struct qstr qn = QSTR_INIT(name, strlen(name));
+	struct path parent_p;
+	struct page *pg = NULL;
+	void *de;
+
+	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+	if (!fe_fn || !de_fn) {
+		pr_info("susfs: cleanup unavailable\n");
+		return;
+	}
+	if (kern_path(parent_path, 0, &parent_p))
+		return;
+	de = fe_fn(d_inode(parent_p.dentry), &qn, &pg);
+	if (de && pg && !IS_ERR(pg)) {
+		de_fn(de, pg, d_inode(parent_p.dentry), NULL);
+		pr_info("susfs: cleaned stale entry '%s'\n", name);
+	} else if (pg && !IS_ERR(pg)) {
+		put_page(pg);
+	}
+	path_put(&parent_p);
+}
+
 static void susfs_restore_boot(void)
 {
 	int i;
+
+	susfs_cleanup_stale_entry("/data/adb", "modules");
 
 	{
 		static const char * const paths[] = {
@@ -308,7 +338,7 @@ def main():
     print("  === Verification ===")
     for kw in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
                'susfs_restore_boot', 'susfs_move_one', 'susfs_collect_actor',
-               'susfs_fixup_stale_f2fs_entry']:
+               'susfs_cleanup_stale_entry']:
         print(f"  {kw}: {content.count(kw)}")
 
 if __name__ == '__main__':
