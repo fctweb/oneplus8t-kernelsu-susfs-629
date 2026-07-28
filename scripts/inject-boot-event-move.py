@@ -39,52 +39,80 @@ static bool susfs_boot_restored __read_mostly = false;
  *   E  modules✓ modules_update✗         → mkdir mu (skipped here, caller handles)
  *   F  both non-existent (clean flash)   → same as C
  */
-static void susfs_ensure_modules(void)
+static void susfs_fixup_modules_work(struct work_struct *work);
+
+static DECLARE_DELAYED_WORK(susfs_fixup_modules_dwork,
+			    susfs_fixup_modules_work);
+
+/* Fix stale f2fs entry for 'modules' — runs 30s after boot so
+ * the fscrypt DE key is loaded.  Strategy:
+ * 1. Try call_usermodehelper(mkdir -p /data/adb/modules).
+ *    If it succeeds → directory already exists, no action needed.
+ * 2. If it fails (ENOENT) → stale entry blocks creation.
+ *    Delete via f2fs_delete_entry + flush NODE pages to disk.
+ * 3. Retry call_usermodehelper(mkdir -p) — should succeed now. */
+static void susfs_fixup_modules_work(struct work_struct *work)
 {
 	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
 	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
 	int (*sync_fn)(void *, struct writeback_control *, int, int);
-	struct path _cp;
-	struct qstr qn = QSTR_INIT("modules", 7);
-	struct page *pg = NULL;
-	void *de;
-	struct writeback_control wbc;
 
-	/* Delete stale f2fs inline-dentry entry for 'modules', then
-	 * flush NODE pages so the cleared bitmap reaches disk.
-	 * Cannot mkdir here — fscrypt DE key not yet loaded at boot,
-	 * so call_usermodehelper(mkdir) hits ENOENT (fscrypt_prepare
-	 * _lookup fails).  User-space / KSU daemon creates the dirs
-	 * naturally on first module install. */
+	/* Phase 1: try mkdir — succeeds if directory already exists
+	 * or if the stale entry was already cleaned up. */
+	if (call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
+		NULL, UMH_WAIT_PROC) == 0) {
+		pr_info("susfs: modules/ OK\n");
+		return;
+	}
+
+	pr_info("susfs: modules/ stale, fixing...\n");
+
+	/* Phase 2: f2fs-level stale entry cleanup */
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
-	if (!fe_fn || !de_fn || !sync_fn) {
-		pr_info("susfs: ensure f2fs kallsyms N/A\n");
-		return;
+	if (fe_fn && de_fn && sync_fn) {
+		struct path _cp;
+		struct qstr qn = QSTR_INIT("modules", 7);
+		struct page *pg = NULL;
+		void *de;
+		struct writeback_control wbc;
+
+		if (kern_path("/data/adb", 0, &_cp) == 0) {
+			de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+			if (de && pg && !IS_ERR(pg)) {
+				de_fn(de, pg, d_inode(_cp.dentry), NULL);
+				pr_info("susfs: deleted stale entry\n");
+				memset(&wbc, 0, sizeof(wbc));
+				wbc.sync_mode = WB_SYNC_ALL;
+				wbc.nr_to_write = LONG_MAX;
+				sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
+					&wbc, 0, 0);
+				pr_info("susfs: flushed node pages\n");
+			} else if (pg && !IS_ERR(pg)) {
+				put_page(pg);
+			}
+			path_put(&_cp);
+		}
 	}
-	if (kern_path("/data/adb", 0, &_cp))
-		return;
-	de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-	if (de && pg && !IS_ERR(pg)) {
-		de_fn(de, pg, d_inode(_cp.dentry), NULL);
-		pr_info("susfs: deleted stale 'modules'\n");
-		memset(&wbc, 0, sizeof(wbc));
-		wbc.sync_mode = WB_SYNC_ALL;
-		wbc.nr_to_write = LONG_MAX;
-		sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info, &wbc, 0, 0);
-		pr_info("susfs: flushed node pages\n");
-	} else if (pg && !IS_ERR(pg)) {
-		put_page(pg);
-	}
-	path_put(&_cp);
+
+	/* Phase 3: retry mkdir — should succeed after cleanup */
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
+		NULL, UMH_WAIT_PROC);
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules_update", NULL},
+		NULL, UMH_WAIT_PROC);
 }
 
 static void susfs_restore_boot(void)
 {
 	int i;
 
-	susfs_ensure_modules();
+	susfs_fixup_modules_dwork);
+	schedule_delayed_work(&susfs_fixup_modules_dwork,
+			     msecs_to_jiffies(30000));
 
 	{
 		static const char * const paths[] = {
@@ -316,6 +344,7 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
+        '#include <linux/workqueue.h>\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
