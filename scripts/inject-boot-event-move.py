@@ -194,8 +194,7 @@ static void susfs_cleanup_stale_modules(void)
 		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
 		if (de && pg && !IS_ERR(pg)) {
 			de_fn(de, pg, d_inode(_cp.dentry), NULL);
-			pr_info("susfs: cleaned stale modules entry
-");
+			pr_info("susfs: cleaned stale modules entry\n");
 			shrink_dcache_parent(d_inode(_cp.dentry)
 					     ->i_sb->s_root);
 			memset(&wbc, 0, sizeof(wbc));
@@ -203,8 +202,7 @@ static void susfs_cleanup_stale_modules(void)
 			wbc.nr_to_write = LONG_MAX;
 			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
 				&wbc, 0, 0);
-			pr_info("susfs: flushed node pages
-");
+			pr_info("susfs: flushed node pages\n");
 		} else if (pg && !IS_ERR(pg)) {
 			put_page(pg);
 		}
