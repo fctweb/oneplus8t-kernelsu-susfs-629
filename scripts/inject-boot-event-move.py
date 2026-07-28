@@ -41,78 +41,47 @@ static bool susfs_boot_restored __read_mostly = false;
  */
 static void susfs_ensure_modules(void)
 {
-	char *argv[4];
-	struct path _cp, _cp2;
+	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
+	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
+	char *argv[4] = { "mkdir", "-p", NULL, NULL };
+	struct path _cp;
 	int err;
 
-	/* Check if modules is already accessible from userspace.
-	 * Note: kern_path from PID 1 can succeed even when userspace
-	 * returns ENOENT (stale f2fs entry in page cache).  We must
-	 * confirm by trying from a userspace process. */
-	argv[0] = "test";
-	argv[1] = "-d";
-	argv[2] = "/data/adb/modules";
-	argv[3] = NULL;
-	err = call_usermodehelper("/system/bin/test", argv, NULL, UMH_WAIT_PROC);
+	/* Phase 1: check from USERSAPCE context whether modules is
+	 * accessible.  kern_path from PID 1 can succeed even when
+	 * the entry is stale and userspace returns ENOENT. */
+	argv[0] = "test"; argv[1] = "-d"; argv[2] = "/data/adb/modules";
+	err = call_usermodehelper("/system/bin/test", argv, NULL,
+				  UMH_WAIT_PROC);
 	if (err == 0)
-		return;  /* Case D: accessible from userspace */
+		return;		/* Case D: all good */
 
-	/* Not accessible.  Try to fix via rename.  Prefer modules_update
-	 * as source if it exists. */
-	if (kern_path("/data/adb/modules_update", 0, &_cp) == 0) {
-		path_put(&_cp);
-		/* Case B: rename modules_update → modules */
-		argv[0] = "mv";
-		argv[1] = "/data/adb/modules_update";
-		argv[2] = "/data/adb/modules";
-		argv[3] = NULL;
-		err = call_usermodehelper("/system/bin/mv", argv, NULL,
-					  UMH_WAIT_PROC);
-		pr_info("susfs: rename mu→modules err=%d\n", err);
-
-		/* Re-create empty modules_update */
-		argv[0] = "mkdir";
-		argv[1] = "-p";
-		argv[2] = "/data/adb/modules_update";
-		argv[3] = NULL;
-		call_usermodehelper("/system/bin/mkdir", argv, NULL,
-				    UMH_WAIT_PROC);
-	} else {
-		/* Cases A/C/F: create temp dir, rename → modules */
-		argv[0] = "mkdir";
-		argv[1] = "-p";
-		argv[2] = "/data/adb/.susfs_modules_tmp";
-		argv[3] = NULL;
+	/* Phase 2: ensure modules_update exists for the rename */
+	if (kern_path("/data/adb/modules_update", 0, &_cp)) {
+		argv[0] = "mkdir"; argv[1] = "-p";
+		argv[2] = "/data/adb/modules_update"; argv[3] = NULL;
 		err = call_usermodehelper("/system/bin/mkdir", argv, NULL,
 					  UMH_WAIT_PROC);
 		if (err) {
-			pr_info("susfs: mkdir tmp err=%d\n", err);
+			pr_info("susfs: mkdir mu err=%d\n", err);
 			return;
 		}
-		argv[0] = "mv";
-		argv[1] = "/data/adb/.susfs_modules_tmp";
-		argv[2] = "/data/adb/modules";
-		argv[3] = NULL;
-		err = call_usermodehelper("/system/bin/mv", argv, NULL,
-					  UMH_WAIT_PROC);
-		pr_info("susfs: rename tmp→modules err=%d\n", err);
-
-		if (err) {
-			argv[0] = "rmdir";
-			argv[1] = "/data/adb/.susfs_modules_tmp";
-			argv[2] = NULL;
-			call_usermodehelper("/system/bin/rmdir",
-				argv, NULL, UMH_WAIT_PROC);
-		}
+	} else {
+		path_put(&_cp);
 	}
 
-	/* If rename failed AND modules_update doesn't exist, also
-	 * try f2fs_delete_entry + forced checkpoint as last resort. */
-	if (err && kern_path("/data/adb/modules_update", 0, &_cp)) {
-		void *(*fe_fn)(struct inode *, const struct qstr *,
-			       struct page **);
-		void *(*de_fn)(void *, struct page *, struct inode *,
-			      struct inode *);
+	/* Phase 3: rename modules_update → modules.
+	 * f2fs_rename handles overwriting the stale entry atomically
+	 * via f2fs_add_link + f2fs_delete_entry in one transaction. */
+	argv[0] = "mv"; argv[1] = "/data/adb/modules_update";
+	argv[2] = "/data/adb/modules"; argv[3] = NULL;
+	err = call_usermodehelper("/system/bin/mv", argv, NULL,
+				  UMH_WAIT_PROC);
+	if (err) {
+		pr_info("susfs: rename mu→modules err=%d, fallback\n", err);
+
+		/* Phase 4: rename failed (stale entry on disk).
+		 * Delete via f2fs_delete_entry + forced checkpoint. */
 		struct qstr qn = QSTR_INIT("modules", 7);
 		struct page *pg = NULL;
 		void *de;
@@ -125,8 +94,6 @@ static void susfs_ensure_modules(void)
 			if (de && pg && !IS_ERR(pg)) {
 				de_fn(de, pg, d_inode(_cp.dentry), NULL);
 				pr_info("susfs: deleted stale entry\n");
-				/* Force f2fs checkpoint with proper
-				 * s_umount lock (required by sync_filesystem) */
 				down_read(&d_inode(_cp.dentry)->i_sb->s_umount);
 				sync_filesystem(d_inode(_cp.dentry)->i_sb);
 				up_read(&d_inode(_cp.dentry)->i_sb->s_umount);
@@ -135,7 +102,30 @@ static void susfs_ensure_modules(void)
 			}
 			path_put(&_cp);
 		}
+
+		/* Phase 5: retry rename after checkpoint */
+		argv[0] = "mv"; argv[1] = "/data/adb/modules_update";
+		argv[2] = "/data/adb/modules"; argv[3] = NULL;
+		err = call_usermodehelper("/system/bin/mv", argv, NULL,
+					  UMH_WAIT_PROC);
+		pr_info("susfs: retry rename err=%d\n", err);
+
+		if (err) {
+			/* Phase 5b: last resort — mkdir after checkpoint */
+			argv[0] = "mkdir"; argv[1] = "-p";
+			argv[2] = "/data/adb/modules"; argv[3] = NULL;
+			err = call_usermodehelper("/system/bin/mkdir", argv,
+						  NULL, UMH_WAIT_PROC);
+			pr_info("susfs: mkdir after checkpoint err=%d\n", err);
+		}
+	} else {
+		pr_info("susfs: rename mu→modules OK\n");
 	}
+
+	/* Phase 6: ensure empty modules_update exists for future installs */
+	argv[0] = "mkdir"; argv[1] = "-p";
+	argv[2] = "/data/adb/modules_update"; argv[3] = NULL;
+	call_usermodehelper("/system/bin/mkdir", argv, NULL, UMH_WAIT_PROC);
 }
 
 static void susfs_restore_boot(void)
