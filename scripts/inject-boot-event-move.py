@@ -48,6 +48,10 @@ static void susfs_cleanup_stale_entry(const char *parent_path,
 	if (de && pg && !IS_ERR(pg)) {
 		de_fn(de, pg, d_inode(parent_p.dentry), NULL);
 		pr_info("susfs: cleaned stale entry '%s'\n", name);
+		/* Force checkpoint so the cleared bitmap reaches disk.
+		 * Without this, the dirty page might be evicted from
+		 * cache and the stale entry re-appears on next read. */
+		sync_filesystem(d_inode(parent_p.dentry)->i_sb);
 	} else if (pg && !IS_ERR(pg)) {
 		put_page(pg);
 	}
