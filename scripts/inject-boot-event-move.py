@@ -93,25 +93,9 @@ static void susfs_cleanup_stale_modules(void)
 		NULL, UMH_WAIT_PROC);
 }
 
-/* Delayed cleanup — runs 30s after boot when fscrypt DE key is loaded
- * (f2fs_find_entry needs the key to resolve encrypted names). */
-static void susfs_cleanup_dwork(struct work_struct *work)
-{
-	pr_info("susfs: delayed cleanup (30s)\n");
-	susfs_cleanup_stale_modules();
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules",
-			   "/data/adb/modules_update", NULL},
-		NULL, UMH_WAIT_PROC);
-}
-
-static DECLARE_DELAYED_WORK(susfs_cleanup_dw, susfs_cleanup_dwork);
-
 static void susfs_restore_boot(void)
 {
 	int i;
-
-	schedule_delayed_work(&susfs_cleanup_dw, msecs_to_jiffies(30000));
 
 	{
 		static const char * const paths[] = {
@@ -341,7 +325,6 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
-        '#include <linux/workqueue.h>\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
@@ -376,7 +359,25 @@ def main():
     else:
         print("  WARNING: stop_input_hook(); not found")
 
-    # 3. Append SUSFS code block at end of file
+    # 3. Add susfs_cleanup_stale_modules() + susfs_apply_module_updates()
+    #    at the end of on_boot_completed() — this runs in ksud process
+    #    context when fscrypt DE key is confirmed loaded.
+    for i, line in enumerate(lines):
+        if line.strip().startswith('ksu_avc_spoof_late_init();'):
+            insert = i + 1
+            call_block = [
+                '#ifdef CONFIG_KSU_SUSFS',
+                '\tsusfs_cleanup_stale_modules();',
+                '\tsusfs_apply_module_updates();',
+                '#endif']
+            for extra_line in reversed(call_block):
+                lines.insert(insert, extra_line)
+            print("  Added cleanup + move after on_boot_completed()")
+            break
+    else:
+        print("  WARNING: ksu_avc_spoof_late_init(); not found in on_boot_completed()")
+
+    # 4. Append SUSFS code block at end of file
     lines.append('')
     for line in SUSFS_BLOCK.split('\n'):
         lines.append(line)
