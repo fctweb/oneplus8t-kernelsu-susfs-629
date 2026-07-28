@@ -43,98 +43,63 @@ static void susfs_ensure_modules(void)
 {
 	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
 	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
-	char *argv[4];
-	int err;
+	int (*sync_fn)(void *, struct writeback_control *, int, int);
+	struct path _cp;
+	struct qstr qn = QSTR_INIT("modules", 7);
+	struct page *pg = NULL;
+	void *de;
+	struct writeback_control wbc;
 
-	/* Check accessibility from USERSPACE context.
-	 * kern_path from PID 1 can succeed on stale entries. */
-	argv[0] = "test"; argv[1] = "-d"; argv[2] = "/data/adb/modules";
-	argv[3] = NULL;
-	if (call_usermodehelper("/system/bin/test", argv, NULL,
-				UMH_WAIT_PROC) == 0)
+	/* Check if modules/ is already accessible from USERSPACE.
+	 * call_usermodehelper runs as a userspace process with full
+	 * VFS access — kern_path from PID 1 can succeed even for
+	 * stale entries that userspace cannot access. */
+	if (call_usermodehelper("/system/bin/test",
+		(char *[]){"test", "-d", "/data/adb/modules", NULL},
+		NULL, UMH_WAIT_PROC) == 0)
 		return;
 
-	/* Phase A — fast path: rename a temp dir to 'modules'.
-	 * f2fs_rename handles stale entries atomically when the
-	 * stale bitmap is still in page cache (not yet evicted). */
-	argv[0] = "mkdir"; argv[1] = "-p";
-	argv[2] = "/data/adb/.susfs_modules_tmp"; argv[3] = NULL;
-	if (call_usermodehelper("/system/bin/mkdir", argv, NULL,
-				UMH_WAIT_PROC)) {
-		pr_info("susfs: mkdir tmp failed, skip\n");
+	/* Resolve f2fs internal functions via kallsyms.
+	 * KSU module cannot include f2fs headers (private driver header). */
+	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
+	if (!fe_fn || !de_fn || !sync_fn) {
+		pr_info("susfs: ensure_modules f2fs kallsyms unavailable\n");
 		return;
 	}
-	argv[0] = "mv"; argv[1] = "/data/adb/.susfs_modules_tmp";
-	argv[2] = "/data/adb/modules"; argv[3] = NULL;
-	if (call_usermodehelper("/system/bin/mv", argv, NULL,
-				UMH_WAIT_PROC) == 0) {
-		pr_info("susfs: rename tmp→modules OK\n");
+
+	if (kern_path("/data/adb", 0, &_cp))
 		return;
+
+	de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+	if (de && pg && !IS_ERR(pg)) {
+		de_fn(de, pg, d_inode(_cp.dentry), NULL);
+		pr_info("susfs: deleted stale entry\n");
+
+		/* Force flush dirty NODE pages to disk.
+		 * sync_filesystem does NOT flush node pages because
+		 * f2fs node_inode is NOT in sb->s_inodes, so
+		 * sync_inodes_sb never calls f2fs_write_node_pages. */
+		memset(&wbc, 0, sizeof(wbc));
+		wbc.sync_mode = WB_SYNC_ALL;
+		wbc.nr_to_write = LONG_MAX;
+		sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info, &wbc, 0, 0);
+		pr_info("susfs: flushed node pages\n");
+	} else if (pg && !IS_ERR(pg)) {
+		put_page(pg);
 	}
-	pr_info("susfs: rename failed, fallback to f2fs sync\n");
+	path_put(&_cp);
 
-	/* Phase B — fallback: stale entry persisted on disk.
-	 * delete entry via f2fs_find_entry + f2fs_delete_entry,
-	 * then force f2fs to flush dirty NODE pages to disk.
-	 * (sync_filesystem does NOT flush node pages because
-	 *  f2fs's node_inode is not in sb->s_inodes.) */
-	{
-		struct path _cp;
-		struct qstr qn = QSTR_INIT("modules", 7);
-		struct page *pg = NULL;
-		void *de;
-
-		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-		if (fe_fn && de_fn &&
-		    kern_path("/data/adb", 0, &_cp) == 0) {
-			de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-			if (de && pg && !IS_ERR(pg)) {
-				de_fn(de, pg, d_inode(_cp.dentry), NULL);
-				pr_info("susfs: deleted stale entry\n");
-				/* Force flush dirty NODE pages.
-				 * f2fs_sync_node_pages writes back all
-				 * dirty node pages (including the inode
-				 * page with cleared inline dentry bitmap).
-				 * Resolved via kallsyms — KSU module
-				 * cannot include f2fs headers. */
-				int (*sync_fn)(void *,
-					struct writeback_control *,
-					int, int);
-				struct writeback_control wbc;
-
-				sync_fn = (void *)kallsyms_lookup_name(
-					"f2fs_sync_node_pages");
-				if (sync_fn) {
-					memset(&wbc, 0, sizeof(wbc));
-					wbc.sync_mode = WB_SYNC_ALL;
-					wbc.nr_to_write = LONG_MAX;
-					sync_fn(
-					    d_inode(_cp.dentry)->i_sb
-					    ->s_fs_info,
-					    &wbc, 0, 0);
-					pr_info("susfs: flushed node pages\n");
-				}
-			} else if (pg && !IS_ERR(pg)) {
-				put_page(pg);
-			}
-			path_put(&_cp);
-		}
-	}
-
-	/* mkdir from userspace — after NODE pages flushed, the
-	 * stale entry is permanently gone from disk and the
-	 * fresh directory has proper fscrypt context. */
-	argv[0] = "mkdir"; argv[1] = "-p";
-	argv[2] = "/data/adb/modules"; argv[3] = NULL;
-	err = call_usermodehelper("/system/bin/mkdir", argv, NULL,
-				  UMH_WAIT_PROC);
-	pr_info("susfs: mkdir modules err=%d\n", err);
+	/* Create fresh modules/ from userspace (proper fscrypt context) */
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
+		NULL, UMH_WAIT_PROC);
 
 	/* Ensure modules_update exists for future module installs */
-	argv[0] = "mkdir"; argv[1] = "-p";
-	argv[2] = "/data/adb/modules_update"; argv[3] = NULL;
-	call_usermodehelper("/system/bin/mkdir", argv, NULL, UMH_WAIT_PROC);
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules_update", NULL},
+		NULL, UMH_WAIT_PROC);
 }
 
 static void susfs_restore_boot(void)
