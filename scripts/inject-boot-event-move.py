@@ -25,7 +25,20 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 			       int namlen, loff_t offset, u64 ino,
 			       unsigned int d_type);
 
-/* Delayed work: 120s after boot, ensure modules exist, move pending modules */
+/* Phase 1 — delete stale f2fs entry if present.
+ * Runs 30s after boot when fscrypt DE key is available
+ * (f2fs_find_entry needs the key to resolve encrypted names). */
+static void susfs_fixup_modules_phase1(struct work_struct *work)
+{
+	pr_info("susfs: fixup phase-1 (30s)\n");
+	susfs_cleanup_stale_modules();
+
+	/* Schedule phase-2 at 120s for mkdir + module move */
+	schedule_delayed_work(&susfs_fixup_modules_phase2_dwork,
+			     msecs_to_jiffies(90000));
+}
+
+/* Phase 2 — 120s after boot: ensure modules exist, move pending modules */
 static void susfs_fixup_modules_phase2(struct work_struct *work)
 {
 	pr_info("susfs: fixup phase-2 (120s)\n");
@@ -36,6 +49,8 @@ static void susfs_fixup_modules_phase2(struct work_struct *work)
 	susfs_apply_module_updates();
 }
 
+static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase1_dwork,
+			    susfs_fixup_modules_phase1);
 static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase2_dwork,
 			    susfs_fixup_modules_phase2);
 
@@ -43,11 +58,9 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
-	susfs_cleanup_stale_modules();
-
-	if (!schedule_delayed_work(&susfs_fixup_modules_phase2_dwork,
-				   msecs_to_jiffies(120000)))
-		pr_info("susfs: phase-2 already scheduled\n");
+	if (!schedule_delayed_work(&susfs_fixup_modules_phase1_dwork,
+				   msecs_to_jiffies(30000)))
+		pr_info("susfs: phase-1 already scheduled\n");
 
 	{
 		static const char * const paths[] = {
