@@ -187,61 +187,6 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 	return 0;
 }
 
-static void susfs_cleanup_stale_modules(void)
-{
-	struct path _p;
-
-	/* Use kern_path (not filp_open) to check accessibility.
-	 * filp_open from PID 1 can succeed on stale entries (inode
-	 * exists) and show orphaned children, falsely reporting
-	 * the directory as valid.  kern_path returns -ENOENT for
-	 * stale entries even from PID 1 context. */
-	if (kern_path("/data/adb/modules", LOOKUP_DIRECTORY, &_p) == 0) {
-		path_put(&_p);
-		return;
-	}
-
-	{
-		void *(*fe_fn)(struct inode *, const struct qstr *,
-			       struct page **);
-		void *(*de_fn)(void *, struct page *, struct inode *,
-			      struct inode *);
-		int (*sync_fn)(void *, struct writeback_control *,
-			       int, int);
-		struct path _cp;
-		struct qstr qn = QSTR_INIT("modules", 7);
-		struct page *pg = NULL;
-		void *de;
-		struct writeback_control wbc;
-
-		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-		sync_fn = (void *)kallsyms_lookup_name(
-			"f2fs_sync_node_pages");
-		if (!fe_fn || !de_fn || !sync_fn)
-			return;
-		if (kern_path("/data/adb", 0, &_cp))
-			return;
-
-		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-		if (de && pg && !IS_ERR(pg)) {
-			de_fn(de, pg, d_inode(_cp.dentry), NULL);
-			pr_info("susfs: cleaned stale modules entry\n");
-			shrink_dcache_parent(d_inode(_cp.dentry)
-					     ->i_sb->s_root);
-			memset(&wbc, 0, sizeof(wbc));
-			wbc.sync_mode = WB_SYNC_ALL;
-			wbc.nr_to_write = LONG_MAX;
-			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
-				&wbc, 0, 0);
-			pr_info("susfs: flushed node pages\n");
-		} else if (pg && !IS_ERR(pg)) {
-			put_page(pg);
-		}
-		path_put(&_cp);
-	}
-}
-
 /* ── Move module from staging to active ──────────────────────── */
 static void susfs_move_one(const char *name)
 {
