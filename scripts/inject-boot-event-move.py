@@ -147,26 +147,16 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 
 static void susfs_cleanup_stale_modules(void)
 {
-	struct file *dir;
-	int has_children = 0;
+	struct path _p;
 
-	dir = filp_open("/data/adb/modules", O_RDONLY | O_DIRECTORY, 0);
-	if (!IS_ERR(dir)) {
-		struct dir_context ctx = { .actor = susfs_collect_actor };
-		char (*names)[128];
-		names = kmalloc(16 * 128, GFP_KERNEL);
-		if (names) {
-			((struct susfs_collect_ctx *)&ctx)->names = names;
-			((struct susfs_collect_ctx *)&ctx)->capacity = 16;
-			((struct susfs_collect_ctx *)&ctx)->count = 0;
-			iterate_dir(dir, &ctx);
-			has_children =
-				((struct susfs_collect_ctx *)&ctx)->count > 0;
-			kfree(names);
-		}
-		filp_close(dir, NULL);
-		if (has_children)
-			return;
+	/* Use kern_path (not filp_open) to check accessibility.
+	 * filp_open from PID 1 can succeed on stale entries (inode
+	 * exists) and show orphaned children, falsely reporting
+	 * the directory as valid.  kern_path returns -ENOENT for
+	 * stale entries even from PID 1 context. */
+	if (kern_path("/data/adb/modules", LOOKUP_DIRECTORY, &_p) == 0) {
+		path_put(&_p);
+		return;
 	}
 
 	{
