@@ -39,6 +39,20 @@ jobs:
             binutils
           pip3 install pyelftools
 
+      - name: Set up ccache
+        run: |
+          ccache -M 10G
+          ccache -o compression=true
+          ccache -z
+
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: ccache-${{ runner.os }}-022-${{ hashFiles('.github/workflows/build-ksu-debug.yml', 'kernel-patches/*', 'scripts/inject-*.py', 'scripts/fix-*.py', 'build-boot-img.py', 'kernel-patches/ksu.config', 'kernel-patches/debug.config') }}
+          restore-keys: |
+            ccache-${{ runner.os }}-
+
       - name: Cache Android clang toolchain
         id: cache-clang
         uses: actions/cache@v4
@@ -63,11 +77,11 @@ jobs:
       - name: Clone LineageOS 20 kernel source (device exact commit)
         if: steps.cache-kernel.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 500 --branch lineage-20 \
+          git clone --depth 1 --single-branch --branch lineage-20 \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250.git kernel
           cd kernel
+          git fetch --depth 1 origin 5dea892fe7e4
           git checkout 5dea892fe7e4
-          git log --oneline -1
 
       - name: Apply kernel compatibility patches
         working-directory: kernel
