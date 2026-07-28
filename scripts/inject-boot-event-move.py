@@ -212,9 +212,15 @@ static void susfs_move_one(const char *name)
 	char old_path[256], new_path[256];
 	struct path old_p = {}, new_p = {}, modules_dir = {};
 	struct dentry *new_dentry;
+	const struct cred *saved;
 	int err, namlen = strlen(name);
 
 	pr_info("susfs: move_one '%s' begin\n", name);
+
+	/* Workqueue context lacks SELinux permission for /data/adb/modules.
+	 * Override creds to KSU root to bypass VFS permission checks.
+	 * Saved and reverted immediately after VFS operations. */
+	saved = override_creds(ksu_cred);
 
 	scnprintf(old_path, sizeof(old_path), "/data/adb/modules_update/%s", name);
 	scnprintf(new_path, sizeof(new_path), "/data/adb/modules/%s", name);
@@ -222,16 +228,15 @@ static void susfs_move_one(const char *name)
 	err = kern_path(old_path, 0, &old_p);
 	if (err) {
 		pr_info("susfs: move_one '%s' source not found err=%d\n", name, err);
+		revert_creds(saved);
 		return;
 	}
 	pr_info("susfs: move_one '%s' source found\n", name);
 
-	/* Skip if /data/adb/modules/ doesn't exist — will be created on next
-	 * module install by install_module_to_system().  vfs_mkdir from PID 1
-	 * context is unreliable due to dentry cache and locking semantics. */
 	if (kern_path("/data/adb/modules", 0, &modules_dir)) {
 		pr_info("susfs: move_one '%s' modules/ missing, deferring\n", name);
 		path_put(&old_p);
+		revert_creds(saved);
 		return;
 	}
 
@@ -240,6 +245,7 @@ static void susfs_move_one(const char *name)
 		pr_info("susfs: move_one '%s' lookup target dentry failed\n", name);
 		path_put(&modules_dir);
 		path_put(&old_p);
+		revert_creds(saved);
 		return;
 	}
 	pr_info("susfs: move_one '%s' found target dentry\n", name);
@@ -263,6 +269,7 @@ static void susfs_move_one(const char *name)
 	dput(new_dentry);
 	path_put(&modules_dir);
 	path_put(&old_p);
+	revert_creds(saved);
 	pr_info("susfs: move_one '%s' finish\n", name);
 }
 
@@ -342,6 +349,7 @@ def main():
         '#include <linux/slab.h>\n'
         '#include <linux/workqueue.h>\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
+        'extern struct cred *ksu_cred;\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
