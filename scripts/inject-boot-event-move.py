@@ -50,30 +50,15 @@ static void susfs_ensure_modules(void)
 	void *de;
 	struct writeback_control wbc;
 
-	/* Check if modules/ is TRULY accessible from userspace.
-	 * call_usermodehelper runs as u:r:kernel:s0 which can access
-	 * stale entries — use a write test instead of test -d. */
-	if (call_usermodehelper("/system/bin/sh",
-		(char *[]){"sh", "-c",
-			   "> /data/adb/modules/.susfs_test 2>/dev/null",
-			   NULL},
-		NULL, UMH_WAIT_PROC) == 0) {
-		/* Clean up and return — directory is accessible */
-		call_usermodehelper("/system/bin/rm",
-			(char *[]){"rm", "-f",
-				   "/data/adb/modules/.susfs_test", NULL},
-			NULL, UMH_WAIT_PROC);
-		return;
-	}
-
-	/* Resolve f2fs internal functions via kallsyms. */
+	/* Safe to always run at boot — modules/ is empty and the
+	 * f2fs entry for 'modules' either needs cleanup (stale
+	 * entry, ENOENT from userspace) or doesn't exist yet.
+	 * Resolve f2fs internals via kallsyms. */
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
-	if (!fe_fn || !de_fn || !sync_fn) {
-		pr_info("susfs: ensure f2fs kallsyms unavailable\n");
+	if (!fe_fn || !de_fn || !sync_fn)
 		return;
-	}
 
 	if (kern_path("/data/adb", 0, &_cp))
 		return;
@@ -82,10 +67,6 @@ static void susfs_ensure_modules(void)
 	if (de && pg && !IS_ERR(pg)) {
 		de_fn(de, pg, d_inode(_cp.dentry), NULL);
 		pr_info("susfs: deleted stale entry\n");
-
-		/* Force flush dirty NODE pages to disk.
-		 * sync_filesystem does NOT flush node pages because
-		 * f2fs node_inode is NOT in sb->s_inodes. */
 		memset(&wbc, 0, sizeof(wbc));
 		wbc.sync_mode = WB_SYNC_ALL;
 		wbc.nr_to_write = LONG_MAX;
@@ -96,12 +77,9 @@ static void susfs_ensure_modules(void)
 	}
 	path_put(&_cp);
 
-	/* Create fresh modules/ from true userspace (proper fscrypt) */
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
 		NULL, UMH_WAIT_PROC);
-
-	/* Ensure modules_update exists for future module installs */
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules_update", NULL},
 		NULL, UMH_WAIT_PROC);
