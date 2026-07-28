@@ -20,90 +20,87 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Ensure /data/adb/modules exists and is accessible from userspace.
- *
- * Cannot mkdir 'modules' directly — f2fs has a stale on-disk inline
- * dentry entry at that name that causes f2fs_lookup to return -ENOENT
- * from userspace even after f2fs_delete_entry (dirty page may be
- * evicted before checkpoint commits the change).
- *
- * Verified working: create a temp dir (or reuse modules_update if
- * present), then rename it to 'modules'.  f2fs_rename handles the
- * overwrite via f2fs_add_link + f2fs_delete_entry in one transaction.
- *
- * All state cases handled:
- *   A  modules✗ modules_update✓(empty)  → mkdir tmp, rename→modules, mkdir mu
- *   B  modules✗ modules_update✓(has id) → rename mu→modules, mkdir mu
- *   C  modules✗ modules_update✗         → mkdir tmp, rename→modules, mkdir mu
- *   D  modules✓ → skip (all good)
- *   E  modules✓ modules_update✗         → mkdir mu (skipped here, caller handles)
- *   F  both non-existent (clean flash)   → same as C
+/* Check whether /data/adb/modules has a stale f2fs entry.
+ * If modules/ is EMPTY or INACCESSIBLE (f2fs stale inline dentry),
+ * delete the entry via f2fs_find_entry + f2fs_delete_entry + flush.
+ * If the directory has children (installed modules), it's valid  skip.
  */
-static void susfs_fixup_modules_work(struct work_struct *work);
-
-/* Fix stale f2fs entry for 'modules' — runs 30s after boot, then
- * reschedules at 120s for second-phase mkdir + module move (by
- * then the fscrypt DE key is guaranteed loaded). */
-static void susfs_fixup_modules_work(struct work_struct *work)
+static void susfs_cleanup_stale_modules(void)
 {
-	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
-	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
-	int (*sync_fn)(void *, struct writeback_control *, int, int);
+	struct file *dir;
+	int has_children = 0;
 
-	pr_info("susfs: fixup phase-1 (30s)\n");
+	dir = filp_open("/data/adb/modules", O_RDONLY | O_DIRECTORY, 0);
+	if (!IS_ERR(dir)) {
+		struct dir_context ctx = { .actor = susfs_collect_actor };
+		char (*names)[128];
+		names = kmalloc(16 * 128, GFP_KERNEL);
+		if (names) {
+			((struct susfs_collect_ctx *)&ctx)->names = names;
+			((struct susfs_collect_ctx *)&ctx)->capacity = 16;
+			((struct susfs_collect_ctx *)&ctx)->count = 0;
+			iterate_dir(dir, &ctx);
+			has_children =
+				((struct susfs_collect_ctx *)&ctx)->count > 0;
+			kfree(names);
+		}
+		filp_close(dir, NULL);
+		if (has_children)
+			return;
+	}
 
-	/* Phase 1 — delete stale entry if present */
-	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
-	if (fe_fn && de_fn && sync_fn) {
+	{
+		void *(*fe_fn)(struct inode *, const struct qstr *,
+			       struct page **);
+		void *(*de_fn)(void *, struct page *, struct inode *,
+			      struct inode *);
+		int (*sync_fn)(void *, struct writeback_control *,
+			       int, int);
 		struct path _cp;
 		struct qstr qn = QSTR_INIT("modules", 7);
 		struct page *pg = NULL;
 		void *de;
 		struct writeback_control wbc;
 
-		if (kern_path("/data/adb", 0, &_cp) == 0) {
-			de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-			if (de && pg && !IS_ERR(pg)) {
-				de_fn(de, pg, d_inode(_cp.dentry), NULL);
-				pr_info("susfs: deleted stale entry\n");
-				shrink_dcache_parent(d_inode(_cp.dentry)
-						     ->i_sb->s_root);
-				memset(&wbc, 0, sizeof(wbc));
-				wbc.sync_mode = WB_SYNC_ALL;
-				wbc.nr_to_write = LONG_MAX;
-				sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
-					&wbc, 0, 0);
-				pr_info("susfs: flushed node pages\n");
-			} else if (pg && !IS_ERR(pg)) {
-				put_page(pg);
-			}
-			path_put(&_cp);
-		}
-	}
+		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+		sync_fn = (void *)kallsyms_lookup_name(
+			"f2fs_sync_node_pages");
+		if (!fe_fn || !de_fn || !sync_fn)
+			return;
+		if (kern_path("/data/adb", 0, &_cp))
+			return;
 
-	/* Phase 2 — schedule mkdir + module move 120s after boot
-	 * (well after fscrypt keys are loaded). */
-	schedule_delayed_work(&susfs_fixup_modules_phase2_dwork,
-			     msecs_to_jiffies(90000));
+		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+		if (de && pg && !IS_ERR(pg)) {
+			de_fn(de, pg, d_inode(_cp.dentry), NULL);
+			pr_info("susfs: cleaned stale modules entry
+");
+			shrink_dcache_parent(d_inode(_cp.dentry)
+					     ->i_sb->s_root);
+			memset(&wbc, 0, sizeof(wbc));
+			wbc.sync_mode = WB_SYNC_ALL;
+			wbc.nr_to_write = LONG_MAX;
+			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
+				&wbc, 0, 0);
+			pr_info("susfs: flushed node pages
+");
+		} else if (pg && !IS_ERR(pg)) {
+			put_page(pg);
+		}
+		path_put(&_cp);
+	}
 }
 
-static DECLARE_DELAYED_WORK(susfs_fixup_modules_dwork,
-			    susfs_fixup_modules_work);
-
-/* Run 90s after phase-1 (120s after boot).  Re-create modules/ and
- * modules_update/ from userspace context (fscrypt guaranteed available),
- * then apply pending module updates. */
+/* Delayed work: 120s after boot, ensure modules exist, move pending modules */
 static void susfs_fixup_modules_phase2(struct work_struct *work)
 {
-	pr_info("susfs: fixup phase-2 (120s)\n");
-
+	pr_info("susfs: fixup phase-2 (120s)
+");
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules",
 			   "/data/adb/modules_update", NULL},
 		NULL, UMH_WAIT_PROC);
-
 	susfs_apply_module_updates();
 }
 
@@ -114,11 +111,11 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
-	if (schedule_delayed_work(&susfs_fixup_modules_dwork,
-				  msecs_to_jiffies(30000)))
-		pr_info("susfs: scheduled modules fixup in 30s\n");
-	else
-		pr_info("susfs: schedule modules fixup FAILED\n");
+	susfs_cleanup_stale_modules();
+
+	if (!schedule_delayed_work(&susfs_fixup_modules_phase2_dwork,
+				   msecs_to_jiffies(120000)))
+		pr_info("susfs: phase-2 already scheduled\n");
 
 	{
 		static const char * const paths[] = {
