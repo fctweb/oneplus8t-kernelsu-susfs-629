@@ -20,83 +20,15 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Check whether /data/adb/modules has a stale f2fs entry.
- * If modules/ is EMPTY or INACCESSIBLE (f2fs stale inline dentry),
- * delete the entry via f2fs_find_entry + f2fs_delete_entry + flush.
- * If the directory has children (installed modules), it's valid  skip.
- */
-static void susfs_cleanup_stale_modules(void)
-{
-	struct file *dir;
-	int has_children = 0;
-
-	dir = filp_open("/data/adb/modules", O_RDONLY | O_DIRECTORY, 0);
-	if (!IS_ERR(dir)) {
-		struct dir_context ctx = { .actor = susfs_collect_actor };
-		char (*names)[128];
-		names = kmalloc(16 * 128, GFP_KERNEL);
-		if (names) {
-			((struct susfs_collect_ctx *)&ctx)->names = names;
-			((struct susfs_collect_ctx *)&ctx)->capacity = 16;
-			((struct susfs_collect_ctx *)&ctx)->count = 0;
-			iterate_dir(dir, &ctx);
-			has_children =
-				((struct susfs_collect_ctx *)&ctx)->count > 0;
-			kfree(names);
-		}
-		filp_close(dir, NULL);
-		if (has_children)
-			return;
-	}
-
-	{
-		void *(*fe_fn)(struct inode *, const struct qstr *,
-			       struct page **);
-		void *(*de_fn)(void *, struct page *, struct inode *,
-			      struct inode *);
-		int (*sync_fn)(void *, struct writeback_control *,
-			       int, int);
-		struct path _cp;
-		struct qstr qn = QSTR_INIT("modules", 7);
-		struct page *pg = NULL;
-		void *de;
-		struct writeback_control wbc;
-
-		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-		sync_fn = (void *)kallsyms_lookup_name(
-			"f2fs_sync_node_pages");
-		if (!fe_fn || !de_fn || !sync_fn)
-			return;
-		if (kern_path("/data/adb", 0, &_cp))
-			return;
-
-		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-		if (de && pg && !IS_ERR(pg)) {
-			de_fn(de, pg, d_inode(_cp.dentry), NULL);
-			pr_info("susfs: cleaned stale modules entry
-");
-			shrink_dcache_parent(d_inode(_cp.dentry)
-					     ->i_sb->s_root);
-			memset(&wbc, 0, sizeof(wbc));
-			wbc.sync_mode = WB_SYNC_ALL;
-			wbc.nr_to_write = LONG_MAX;
-			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
-				&wbc, 0, 0);
-			pr_info("susfs: flushed node pages
-");
-		} else if (pg && !IS_ERR(pg)) {
-			put_page(pg);
-		}
-		path_put(&_cp);
-	}
-}
+static void susfs_cleanup_stale_modules(void);
+static int susfs_collect_actor(struct dir_context *ctx, const char *name,
+			       int namlen, loff_t offset, u64 ino,
+			       unsigned int d_type);
 
 /* Delayed work: 120s after boot, ensure modules exist, move pending modules */
 static void susfs_fixup_modules_phase2(struct work_struct *work)
 {
-	pr_info("susfs: fixup phase-2 (120s)
-");
+	pr_info("susfs: fixup phase-2 (120s)\n");
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules",
 			   "/data/adb/modules_update", NULL},
@@ -211,6 +143,73 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 	c->names[c->count][min((size_t)namlen, sizeof(c->names[0]) - 1)] = '\0';
 	c->count++;
 	return 0;
+}
+
+static void susfs_cleanup_stale_modules(void)
+{
+	struct file *dir;
+	int has_children = 0;
+
+	dir = filp_open("/data/adb/modules", O_RDONLY | O_DIRECTORY, 0);
+	if (!IS_ERR(dir)) {
+		struct dir_context ctx = { .actor = susfs_collect_actor };
+		char (*names)[128];
+		names = kmalloc(16 * 128, GFP_KERNEL);
+		if (names) {
+			((struct susfs_collect_ctx *)&ctx)->names = names;
+			((struct susfs_collect_ctx *)&ctx)->capacity = 16;
+			((struct susfs_collect_ctx *)&ctx)->count = 0;
+			iterate_dir(dir, &ctx);
+			has_children =
+				((struct susfs_collect_ctx *)&ctx)->count > 0;
+			kfree(names);
+		}
+		filp_close(dir, NULL);
+		if (has_children)
+			return;
+	}
+
+	{
+		void *(*fe_fn)(struct inode *, const struct qstr *,
+			       struct page **);
+		void *(*de_fn)(void *, struct page *, struct inode *,
+			      struct inode *);
+		int (*sync_fn)(void *, struct writeback_control *,
+			       int, int);
+		struct path _cp;
+		struct qstr qn = QSTR_INIT("modules", 7);
+		struct page *pg = NULL;
+		void *de;
+		struct writeback_control wbc;
+
+		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+		sync_fn = (void *)kallsyms_lookup_name(
+			"f2fs_sync_node_pages");
+		if (!fe_fn || !de_fn || !sync_fn)
+			return;
+		if (kern_path("/data/adb", 0, &_cp))
+			return;
+
+		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+		if (de && pg && !IS_ERR(pg)) {
+			de_fn(de, pg, d_inode(_cp.dentry), NULL);
+			pr_info("susfs: cleaned stale modules entry
+");
+			shrink_dcache_parent(d_inode(_cp.dentry)
+					     ->i_sb->s_root);
+			memset(&wbc, 0, sizeof(wbc));
+			wbc.sync_mode = WB_SYNC_ALL;
+			wbc.nr_to_write = LONG_MAX;
+			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
+				&wbc, 0, 0);
+			pr_info("susfs: flushed node pages
+");
+		} else if (pg && !IS_ERR(pg)) {
+			put_page(pg);
+		}
+		path_put(&_cp);
+	}
 }
 
 /* ── Move module from staging to active ──────────────────────── */
