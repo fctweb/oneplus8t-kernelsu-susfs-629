@@ -56,6 +56,8 @@ static void susfs_fixup_modules_work(struct work_struct *work)
 	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
 	int (*sync_fn)(void *, struct writeback_control *, int, int);
 
+	pr_info("susfs: fixup_modules_work started\n");
+
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
@@ -102,8 +104,11 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
-	schedule_delayed_work(&susfs_fixup_modules_dwork,
-			     msecs_to_jiffies(30000));
+	if (schedule_delayed_work(&susfs_fixup_modules_dwork,
+				  msecs_to_jiffies(30000)))
+		pr_info("susfs: scheduled modules fixup in 30s\n");
+	else
+		pr_info("susfs: schedule modules fixup FAILED\n");
 
 	{
 		static const char * const paths[] = {
