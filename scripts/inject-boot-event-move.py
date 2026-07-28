@@ -110,7 +110,6 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
-	susfs_fixup_modules_dwork);
 	schedule_delayed_work(&susfs_fixup_modules_dwork,
 			     msecs_to_jiffies(30000));
 
