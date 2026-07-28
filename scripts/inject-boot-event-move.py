@@ -25,11 +25,15 @@ static bool susfs_boot_restored __read_mostly = false;
  * /data/adb/.susfs_fixed so subsequent boots skip cleanup. */
 static void susfs_cleanup_stale_modules(void)
 {
+	pr_info("susfs: checking stale modules\n");
+
 	/* Skip if already fixed */
 	if (call_usermodehelper("/system/bin/test",
 		(char *[]){"test", "-f", "/data/adb/.susfs_fixed", NULL},
-		NULL, UMH_WAIT_PROC) == 0)
+		NULL, UMH_WAIT_PROC) == 0) {
+		pr_info("susfs: stale modules already fixed\n");
 		return;
+	}
 
 	/* Delete stale entry via f2fs internals */
 	{
@@ -49,8 +53,12 @@ static void susfs_cleanup_stale_modules(void)
 		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 		sync_fn = (void *)kallsyms_lookup_name(
 			"f2fs_sync_node_pages");
-		if (!fe_fn || !de_fn || !sync_fn)
+		if (!fe_fn || !de_fn || !sync_fn) {
+			pr_info("susfs: kallsyms lookup failed "
+				"fe=%p de=%p sync=%p\n",
+				fe_fn, de_fn, sync_fn);
 			return;
+		}
 		if (kern_path("/data/adb", 0, &_cp))
 			return;
 
