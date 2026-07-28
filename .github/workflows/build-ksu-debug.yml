@@ -27,8 +27,17 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache apt packages
+        id: cache-apt
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt
+          key: apt-v2
+
       - name: Install build dependencies
+        if: steps.cache-apt.outputs.cache-hit != 'true'
         run: |
+          export DEBIAN_FRONTEND=noninteractive
           apt-get update
           apt-get install -y \
             git curl wget zip unzip python3 python3-pip \
