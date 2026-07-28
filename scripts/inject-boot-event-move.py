@@ -237,8 +237,9 @@ static void susfs_move_one(const char *name)
 	}
 	pr_info("susfs: move_one '%s' source found\n", name);
 
-	if (kern_path("/data/adb/modules", 0, &modules_dir)) {
-		pr_info("susfs: move_one '%s' modules/ missing, deferring\n", name);
+	err = kern_path("/data/adb/modules", 0, &modules_dir);
+	if (err) {
+		pr_info("susfs: move_one '%s' modules/ err=%d, deferring\n", name, err);
 		path_put(&old_p);
 		revert_creds(saved);
 		return;
@@ -263,7 +264,7 @@ static void susfs_move_one(const char *name)
 		pr_info("susfs: move_one '%s' exchange done err=%d\n", name, err);
 		path_put(&new_p);
 	} else {
-		pr_info("susfs: move_one '%s' target not exists, simple rename\n", name);
+		pr_info("susfs: move_one '%s' target not exists err=%d, simple rename\n", name, err);
 		err = vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
 			   modules_dir.dentry->d_inode, new_dentry,
 			   NULL, 0);
