@@ -20,49 +20,97 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Delete a stale f2fs directory entry that is accessible via
- * f2fs_find_entry but returns -ENOENT from userspace f2fs_lookup.
- * After deletion, the KSU daemon (or mkdir from userspace) can
- * create a fresh entry with proper fscrypt context. */
-static void susfs_cleanup_stale_entry(const char *parent_path,
-				       const char *name)
+/* Ensure /data/adb/modules exists and is accessible from userspace.
+ *
+ * Cannot mkdir 'modules' directly — f2fs has a stale on-disk inline
+ * dentry entry at that name that causes f2fs_lookup to return -ENOENT
+ * from userspace even after f2fs_delete_entry (dirty page may be
+ * evicted before checkpoint commits the change).
+ *
+ * Verified working: create a temp dir (or reuse modules_update if
+ * present), then rename it to 'modules'.  f2fs_rename handles the
+ * overwrite via f2fs_add_link + f2fs_delete_entry in one transaction.
+ *
+ * All state cases handled:
+ *   A  modules✗ modules_update✓(empty)  → mkdir tmp, rename→modules, mkdir mu
+ *   B  modules✗ modules_update✓(has id) → rename mu→modules, mkdir mu
+ *   C  modules✗ modules_update✗         → mkdir tmp, rename→modules, mkdir mu
+ *   D  modules✓ → skip (all good)
+ *   E  modules✓ modules_update✗         → mkdir mu (skipped here, caller handles)
+ *   F  both non-existent (clean flash)   → same as C
+ */
+static void susfs_ensure_modules(void)
 {
-	void *(*fe_fn)(struct inode *, const struct qstr *,
-		       struct page **);
-	void *(*de_fn)(void *, struct page *, struct inode *,
-		      struct inode *);
-	struct qstr qn = QSTR_INIT(name, strlen(name));
-	struct path parent_p;
-	struct page *pg = NULL;
-	void *de;
+	char *argv[4];
+	bool used_mu = false;
+	int err;
 
-	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-	if (!fe_fn || !de_fn) {
-		pr_info("susfs: cleanup unavailable\n");
+	/* Case D: already accessible */
+	if (kern_path("/data/adb/modules", 0, NULL) == 0)
 		return;
+
+	/* Case B: use modules_update as source if it exists */
+	if (kern_path("/data/adb/modules_update", 0, NULL) == 0) {
+		used_mu = true;
+	} else {
+		/* Cases A/C/F: create a temp directory as rename source */
+		argv[0] = "mkdir";
+		argv[1] = "-p";
+		argv[2] = "/data/adb/.susfs_modules_tmp";
+		argv[3] = NULL;
+		err = call_usermodehelper("/system/bin/mkdir", argv, NULL,
+					  UMH_WAIT_PROC);
+		if (err) {
+			pr_info("susfs: ensure_modules mkdir tmp err=%d\n",
+				err);
+			return;
+		}
 	}
-	if (kern_path(parent_path, 0, &parent_p))
-		return;
-	de = fe_fn(d_inode(parent_p.dentry), &qn, &pg);
-	if (de && pg && !IS_ERR(pg)) {
-		de_fn(de, pg, d_inode(parent_p.dentry), NULL);
-		pr_info("susfs: cleaned stale entry '%s'\n", name);
-		/* Force checkpoint so the cleared bitmap reaches disk.
-		 * Without this, the dirty page might be evicted from
-		 * cache and the stale entry re-appears on next read. */
-		sync_filesystem(d_inode(parent_p.dentry)->i_sb);
-	} else if (pg && !IS_ERR(pg)) {
-		put_page(pg);
+
+	/* Rename source → modules.  This overwrites the stale f2fs
+	 * inline dentry entry atomically via f2fs_rename.
+	 *
+	 * We use call_usermodehelper here because vfs_rename from PID 1
+	 * exhibited the same fscrypt-context issue as vfs_mkdir.
+	 * Running the userspace 'mv' command gives a proper process
+	 * context with full VFS + fscrypt access. */
+	argv[0] = "mv";
+	argv[1] = used_mu ? "/data/adb/modules_update"
+			  : "/data/adb/.susfs_modules_tmp";
+	argv[2] = "/data/adb/modules";
+	argv[3] = NULL;
+	err = call_usermodehelper("/system/bin/mv", argv, NULL,
+				  UMH_WAIT_PROC);
+	if (err)
+		pr_info("susfs: ensure_modules rename err=%d\n", err);
+	else
+		pr_info("susfs: ensure_modules rename OK\n");
+
+	/* If we renamed modules_update away, re-create it as empty */
+	if (used_mu) {
+		argv[0] = "mkdir";
+		argv[1] = "-p";
+		argv[2] = "/data/adb/modules_update";
+		argv[3] = NULL;
+		call_usermodehelper("/system/bin/mkdir", argv, NULL,
+				    UMH_WAIT_PROC);
 	}
-	path_put(&parent_p);
+
+	/* If rename still failed, clean up the temp dir */
+	if (err && !used_mu) {
+		argv[0] = "rmdir";
+		argv[1] = "/data/adb/.susfs_modules_tmp";
+		argv[2] = NULL;
+		call_usermodehelper("/system/bin/rmdir", argv, NULL,
+				    UMH_WAIT_PROC);
+	}
 }
 
 static void susfs_restore_boot(void)
 {
 	int i;
 
-	susfs_cleanup_stale_entry("/data/adb", "modules");
+	susfs_ensure_modules();
 
 	{
 		static const char * const paths[] = {
@@ -342,7 +390,7 @@ def main():
     print("  === Verification ===")
     for kw in ['susfs_apply_module_updates', 'susfs_is_boot_restored',
                'susfs_restore_boot', 'susfs_move_one', 'susfs_collect_actor',
-               'susfs_cleanup_stale_entry']:
+               'susfs_ensure_modules']:
         print(f"  {kw}: {content.count(kw)}")
 
 if __name__ == '__main__':
