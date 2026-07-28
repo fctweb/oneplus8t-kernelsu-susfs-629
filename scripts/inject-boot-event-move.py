@@ -47,11 +47,9 @@ static DECLARE_DELAYED_WORK(susfs_fixup_modules_dwork,
 /* Fix stale f2fs entry for 'modules' — runs 30s after boot so
  * the fscrypt DE key is loaded.  Strategy:
  * 1. f2fs_find_entry + f2fs_delete_entry (unconditionally)
- * 2. f2fs_sync_node_pages to flush NODE dirty pages to disk
- * 3. call_usermodehelper(mkdir -p) to create fresh accessible dirs
- *
- * Cannot use mkdir as a detection — call_usermodehelper runs as kernel
- * context which can access stale entries.  Always run the cleanup. */
+ * 2. Invalidate dcache to clear any cached dentry
+ * 3. f2fs_sync_node_pages to flush NODE dirty pages to disk
+ * 4. call_usermodehelper(mkdir -p) to create fresh accessible dirs */
 static void susfs_fixup_modules_work(struct work_struct *work)
 {
 	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
@@ -73,6 +71,12 @@ static void susfs_fixup_modules_work(struct work_struct *work)
 			if (de && pg && !IS_ERR(pg)) {
 				de_fn(de, pg, d_inode(_cp.dentry), NULL);
 				pr_info("susfs: deleted stale entry\n");
+				/* Invalidate dcache — d_drop the dentry
+				 * so subsequent VFS lookups go to f2fs
+				 * instead of finding the stale cached
+				 * dentry that is no longer in the bitmap. */
+				shrink_dcache_parent(d_inode(_cp.dentry)
+						     ->i_sb->s_root);
 				memset(&wbc, 0, sizeof(wbc));
 				wbc.sync_mode = WB_SYNC_ALL;
 				wbc.nr_to_write = LONG_MAX;
