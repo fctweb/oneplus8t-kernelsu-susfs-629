@@ -20,49 +20,76 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-static void susfs_cleanup_stale_modules(void);
-static int susfs_collect_actor(struct dir_context *ctx, const char *name,
-			       int namlen, loff_t offset, u64 ino,
-			       unsigned int d_type);
-
-/* Phase 1 — delete stale f2fs entry if present.
- * Runs 30s after boot when fscrypt DE key is available
- * (f2fs_find_entry needs the key to resolve encrypted names). */
-static void susfs_fixup_modules_phase2(struct work_struct *work);
-static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase2_dwork,
-			    susfs_fixup_modules_phase2);
-
-static void susfs_fixup_modules_phase1(struct work_struct *work)
+/* One-time stale f2fs entry cleanup.
+ * Runs at boot on first install only.  After fixing, creates
+ * /data/adb/.susfs_fixed so subsequent boots skip cleanup. */
+static void susfs_cleanup_stale_modules(void)
 {
-	pr_info("susfs: fixup phase-1 (30s)\n");
-	susfs_cleanup_stale_modules();
+	/* Skip if already fixed */
+	if (call_usermodehelper("/system/bin/test",
+		(char *[]){"test", "-f", "/data/adb/.susfs_fixed", NULL},
+		NULL, UMH_WAIT_PROC) == 0)
+		return;
 
-	/* Schedule phase-2 at 120s for mkdir + module move */
-	schedule_delayed_work(&susfs_fixup_modules_phase2_dwork,
-			     msecs_to_jiffies(90000));
-}
+	/* Delete stale entry via f2fs internals */
+	{
+		void *(*fe_fn)(struct inode *, const struct qstr *,
+			       struct page **);
+		void *(*de_fn)(void *, struct page *, struct inode *,
+			      struct inode *);
+		int (*sync_fn)(void *, struct writeback_control *,
+			       int, int);
+		struct path _cp;
+		struct qstr qn = QSTR_INIT("modules", 7);
+		struct page *pg = NULL;
+		void *de;
+		struct writeback_control wbc;
 
-/* Phase 2 — 120s after boot: ensure modules exist, move pending modules */
-static void susfs_fixup_modules_phase2(struct work_struct *work)
-{
-	pr_info("susfs: fixup phase-2 (120s)\n");
+		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+		sync_fn = (void *)kallsyms_lookup_name(
+			"f2fs_sync_node_pages");
+		if (!fe_fn || !de_fn || !sync_fn)
+			return;
+		if (kern_path("/data/adb", 0, &_cp))
+			return;
+
+		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+		if (de && pg && !IS_ERR(pg)) {
+			de_fn(de, pg, d_inode(_cp.dentry), NULL);
+			pr_info("susfs: cleaned stale entry\n");
+			shrink_dcache_parent(d_inode(_cp.dentry)
+					     ->i_sb->s_root);
+			memset(&wbc, 0, sizeof(wbc));
+			wbc.sync_mode = WB_SYNC_ALL;
+			wbc.nr_to_write = LONG_MAX;
+			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
+				&wbc, 0, 0);
+			pr_info("susfs: flushed node pages\n");
+		} else if (pg && !IS_ERR(pg)) {
+			put_page(pg);
+		}
+		path_put(&_cp);
+	}
+
+	/* Create fresh dirs from userspace (mkdir may fail if fscrypt
+	 * key not loaded yet — that's OK, KSU daemon creates them later) */
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules",
 			   "/data/adb/modules_update", NULL},
 		NULL, UMH_WAIT_PROC);
-	susfs_apply_module_updates();
-}
 
-static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase1_dwork,
-			    susfs_fixup_modules_phase1);
+	/* Mark as fixed */
+	call_usermodehelper("/system/bin/sh",
+		(char *[]){"sh", "-c", "> /data/adb/.susfs_fixed", NULL},
+		NULL, UMH_WAIT_PROC);
+}
 
 static void susfs_restore_boot(void)
 {
 	int i;
 
-	if (!schedule_delayed_work(&susfs_fixup_modules_phase1_dwork,
-				   msecs_to_jiffies(30000)))
-		pr_info("susfs: phase-1 already scheduled\n");
+	susfs_cleanup_stale_modules();
 
 	{
 		static const char * const paths[] = {
@@ -221,15 +248,9 @@ static void susfs_move_one(const char *name)
 	char old_path[256], new_path[256];
 	struct path old_p = {}, new_p = {}, modules_dir = {};
 	struct dentry *new_dentry;
-	const struct cred *saved;
 	int err, namlen = strlen(name);
 
 	pr_info("susfs: move_one '%s' begin\n", name);
-
-	/* Workqueue context lacks SELinux permission for /data/adb/modules.
-	 * Override creds to KSU root to bypass VFS permission checks.
-	 * Saved and reverted immediately after VFS operations. */
-	saved = override_creds(ksu_cred);
 
 	scnprintf(old_path, sizeof(old_path), "/data/adb/modules_update/%s", name);
 	scnprintf(new_path, sizeof(new_path), "/data/adb/modules/%s", name);
@@ -237,7 +258,6 @@ static void susfs_move_one(const char *name)
 	err = kern_path(old_path, 0, &old_p);
 	if (err) {
 		pr_info("susfs: move_one '%s' source not found err=%d\n", name, err);
-		revert_creds(saved);
 		return;
 	}
 	pr_info("susfs: move_one '%s' source found\n", name);
@@ -246,7 +266,6 @@ static void susfs_move_one(const char *name)
 	if (err) {
 		pr_info("susfs: move_one '%s' modules/ err=%d, deferring\n", name, err);
 		path_put(&old_p);
-		revert_creds(saved);
 		return;
 	}
 
@@ -255,7 +274,6 @@ static void susfs_move_one(const char *name)
 		pr_info("susfs: move_one '%s' lookup target dentry failed\n", name);
 		path_put(&modules_dir);
 		path_put(&old_p);
-		revert_creds(saved);
 		return;
 	}
 	pr_info("susfs: move_one '%s' found target dentry\n", name);
@@ -279,7 +297,6 @@ static void susfs_move_one(const char *name)
 	dput(new_dentry);
 	path_put(&modules_dir);
 	path_put(&old_p);
-	revert_creds(saved);
 	pr_info("susfs: move_one '%s' finish\n", name);
 }
 
@@ -357,9 +374,7 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
-        '#include <linux/workqueue.h>\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
-        'extern struct cred *ksu_cred;\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
