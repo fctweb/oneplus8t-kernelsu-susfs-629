@@ -42,18 +42,33 @@ static bool susfs_boot_restored __read_mostly = false;
 static void susfs_ensure_modules(void)
 {
 	char *argv[4];
-	bool used_mu = false;
+	struct path _cp;
 	int err;
+	bool m_ok = (kern_path("/data/adb/modules", 0, &_cp) == 0);
+	if (m_ok) { path_put(&_cp); return; }
 
-	/* Case D: already accessible */
-	if (kern_path("/data/adb/modules", 0, NULL) == 0)
-		return;
+	/* Decide rename source.  Prefer modules_update if it exists,
+	 * otherwise create a temp directory. */
+	if (kern_path("/data/adb/modules_update", 0, &_cp) == 0) {
+		path_put(&_cp);
+		/* Case B: rename modules_update → modules */
+		argv[0] = "mv";
+		argv[1] = "/data/adb/modules_update";
+		argv[2] = "/data/adb/modules";
+		argv[3] = NULL;
+		err = call_usermodehelper("/system/bin/mv", argv, NULL,
+					  UMH_WAIT_PROC);
+		pr_info("susfs: rename mu→modules err=%d\n", err);
 
-	/* Case B: use modules_update as source if it exists */
-	if (kern_path("/data/adb/modules_update", 0, NULL) == 0) {
-		used_mu = true;
+		/* Re-create empty modules_update */
+		argv[0] = "mkdir";
+		argv[1] = "-p";
+		argv[2] = "/data/adb/modules_update";
+		argv[3] = NULL;
+		call_usermodehelper("/system/bin/mkdir", argv, NULL,
+				    UMH_WAIT_PROC);
 	} else {
-		/* Cases A/C/F: create a temp directory as rename source */
+		/* Cases A/C/F: create temp dir, rename → modules */
 		argv[0] = "mkdir";
 		argv[1] = "-p";
 		argv[2] = "/data/adb/.susfs_modules_tmp";
@@ -61,48 +76,24 @@ static void susfs_ensure_modules(void)
 		err = call_usermodehelper("/system/bin/mkdir", argv, NULL,
 					  UMH_WAIT_PROC);
 		if (err) {
-			pr_info("susfs: ensure_modules mkdir tmp err=%d\n",
-				err);
+			pr_info("susfs: mkdir tmp err=%d\n", err);
 			return;
 		}
-	}
-
-	/* Rename source → modules.  This overwrites the stale f2fs
-	 * inline dentry entry atomically via f2fs_rename.
-	 *
-	 * We use call_usermodehelper here because vfs_rename from PID 1
-	 * exhibited the same fscrypt-context issue as vfs_mkdir.
-	 * Running the userspace 'mv' command gives a proper process
-	 * context with full VFS + fscrypt access. */
-	argv[0] = "mv";
-	argv[1] = used_mu ? "/data/adb/modules_update"
-			  : "/data/adb/.susfs_modules_tmp";
-	argv[2] = "/data/adb/modules";
-	argv[3] = NULL;
-	err = call_usermodehelper("/system/bin/mv", argv, NULL,
-				  UMH_WAIT_PROC);
-	if (err)
-		pr_info("susfs: ensure_modules rename err=%d\n", err);
-	else
-		pr_info("susfs: ensure_modules rename OK\n");
-
-	/* If we renamed modules_update away, re-create it as empty */
-	if (used_mu) {
-		argv[0] = "mkdir";
-		argv[1] = "-p";
-		argv[2] = "/data/adb/modules_update";
-		argv[3] = NULL;
-		call_usermodehelper("/system/bin/mkdir", argv, NULL,
-				    UMH_WAIT_PROC);
-	}
-
-	/* If rename still failed, clean up the temp dir */
-	if (err && !used_mu) {
-		argv[0] = "rmdir";
+		argv[0] = "mv";
 		argv[1] = "/data/adb/.susfs_modules_tmp";
-		argv[2] = NULL;
-		call_usermodehelper("/system/bin/rmdir", argv, NULL,
-				    UMH_WAIT_PROC);
+		argv[2] = "/data/adb/modules";
+		argv[3] = NULL;
+		err = call_usermodehelper("/system/bin/mv", argv, NULL,
+					  UMH_WAIT_PROC);
+		pr_info("susfs: rename tmp→modules err=%d\n", err);
+
+		if (err) {
+			argv[0] = "rmdir";
+			argv[1] = "/data/adb/.susfs_modules_tmp";
+			argv[2] = NULL;
+			call_usermodehelper("/system/bin/rmdir",
+				argv, NULL, UMH_WAIT_PROC);
+		}
 	}
 }
 
