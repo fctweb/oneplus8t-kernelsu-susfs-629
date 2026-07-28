@@ -41,23 +41,18 @@ static bool susfs_boot_restored __read_mostly = false;
  */
 static void susfs_fixup_modules_work(struct work_struct *work);
 
-static DECLARE_DELAYED_WORK(susfs_fixup_modules_dwork,
-			    susfs_fixup_modules_work);
-
-/* Fix stale f2fs entry for 'modules' — runs 30s after boot so
- * the fscrypt DE key is loaded.  Strategy:
- * 1. f2fs_find_entry + f2fs_delete_entry (unconditionally)
- * 2. Invalidate dcache to clear any cached dentry
- * 3. f2fs_sync_node_pages to flush NODE dirty pages to disk
- * 4. call_usermodehelper(mkdir -p) to create fresh accessible dirs */
+/* Fix stale f2fs entry for 'modules' — runs 30s after boot, then
+ * reschedules at 120s for second-phase mkdir + module move (by
+ * then the fscrypt DE key is guaranteed loaded). */
 static void susfs_fixup_modules_work(struct work_struct *work)
 {
 	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
 	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
 	int (*sync_fn)(void *, struct writeback_control *, int, int);
 
-	pr_info("susfs: fixup_modules_work started\n");
+	pr_info("susfs: fixup phase-1 (30s)\n");
 
+	/* Phase 1 — delete stale entry if present */
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
@@ -73,10 +68,6 @@ static void susfs_fixup_modules_work(struct work_struct *work)
 			if (de && pg && !IS_ERR(pg)) {
 				de_fn(de, pg, d_inode(_cp.dentry), NULL);
 				pr_info("susfs: deleted stale entry\n");
-				/* Invalidate dcache — d_drop the dentry
-				 * so subsequent VFS lookups go to f2fs
-				 * instead of finding the stale cached
-				 * dentry that is no longer in the bitmap. */
 				shrink_dcache_parent(d_inode(_cp.dentry)
 						     ->i_sb->s_root);
 				memset(&wbc, 0, sizeof(wbc));
@@ -92,13 +83,32 @@ static void susfs_fixup_modules_work(struct work_struct *work)
 		}
 	}
 
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
-		NULL, UMH_WAIT_PROC);
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules_update", NULL},
-		NULL, UMH_WAIT_PROC);
+	/* Phase 2 — schedule mkdir + module move 120s after boot
+	 * (well after fscrypt keys are loaded). */
+	schedule_delayed_work(&susfs_fixup_modules_phase2_dwork,
+			     msecs_to_jiffies(90000));
 }
+
+static DECLARE_DELAYED_WORK(susfs_fixup_modules_dwork,
+			    susfs_fixup_modules_work);
+
+/* Run 90s after phase-1 (120s after boot).  Re-create modules/ and
+ * modules_update/ from userspace context (fscrypt guaranteed available),
+ * then apply pending module updates. */
+static void susfs_fixup_modules_phase2(struct work_struct *work)
+{
+	pr_info("susfs: fixup phase-2 (120s)\n");
+
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules",
+			   "/data/adb/modules_update", NULL},
+		NULL, UMH_WAIT_PROC);
+
+	susfs_apply_module_updates();
+}
+
+static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase2_dwork,
+			    susfs_fixup_modules_phase2);
 
 static void susfs_restore_boot(void)
 {
