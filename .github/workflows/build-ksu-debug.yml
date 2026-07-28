@@ -667,7 +667,7 @@ jobs:
       - name: Configure kernel (device config + KSU + debug)
         working-directory: kernel
         run: |
-          export PATH="/tmp/clang-r450784d/bin:/usr/lib/ccache:$PATH"
+          export PATH="/usr/lib/ccache:/tmp/clang-r450784d/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export LLVM_IAS=1
@@ -711,7 +711,7 @@ jobs:
         shell: bash -e -o pipefail {0}
         working-directory: kernel
         run: |
-          export PATH="/tmp/clang-r450784d/bin:/usr/lib/ccache:$PATH"
+          export PATH="/usr/lib/ccache:/tmp/clang-r450784d/bin:$PATH"
           export ARCH=arm64
           export LLVM=1
           export LLVM_IAS=1
