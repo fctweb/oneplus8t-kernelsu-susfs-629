@@ -42,13 +42,23 @@ static bool susfs_boot_restored __read_mostly = false;
 static void susfs_ensure_modules(void)
 {
 	char *argv[4];
-	struct path _cp;
+	struct path _cp, _cp2;
 	int err;
-	bool m_ok = (kern_path("/data/adb/modules", 0, &_cp) == 0);
-	if (m_ok) { path_put(&_cp); return; }
 
-	/* Decide rename source.  Prefer modules_update if it exists,
-	 * otherwise create a temp directory. */
+	/* Check if modules is already accessible from userspace.
+	 * Note: kern_path from PID 1 can succeed even when userspace
+	 * returns ENOENT (stale f2fs entry in page cache).  We must
+	 * confirm by trying from a userspace process. */
+	argv[0] = "test";
+	argv[1] = "-d";
+	argv[2] = "/data/adb/modules";
+	argv[3] = NULL;
+	err = call_usermodehelper("/system/bin/test", argv, NULL, UMH_WAIT_PROC);
+	if (err == 0)
+		return;  /* Case D: accessible from userspace */
+
+	/* Not accessible.  Try to fix via rename.  Prefer modules_update
+	 * as source if it exists. */
 	if (kern_path("/data/adb/modules_update", 0, &_cp) == 0) {
 		path_put(&_cp);
 		/* Case B: rename modules_update → modules */
@@ -93,6 +103,37 @@ static void susfs_ensure_modules(void)
 			argv[2] = NULL;
 			call_usermodehelper("/system/bin/rmdir",
 				argv, NULL, UMH_WAIT_PROC);
+		}
+	}
+
+	/* If rename failed AND modules_update doesn't exist, also
+	 * try f2fs_delete_entry + forced checkpoint as last resort. */
+	if (err && kern_path("/data/adb/modules_update", 0, &_cp)) {
+		void *(*fe_fn)(struct inode *, const struct qstr *,
+			       struct page **);
+		void *(*de_fn)(void *, struct page *, struct inode *,
+			      struct inode *);
+		struct qstr qn = QSTR_INIT("modules", 7);
+		struct page *pg = NULL;
+		void *de;
+
+		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+		if (fe_fn && de_fn &&
+		    kern_path("/data/adb", 0, &_cp) == 0) {
+			de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+			if (de && pg && !IS_ERR(pg)) {
+				de_fn(de, pg, d_inode(_cp.dentry), NULL);
+				pr_info("susfs: deleted stale entry\n");
+				/* Force f2fs checkpoint with proper
+				 * s_umount lock (required by sync_filesystem) */
+				down_read(&d_inode(_cp.dentry)->i_sb->s_umount);
+				sync_filesystem(d_inode(_cp.dentry)->i_sb);
+				up_read(&d_inode(_cp.dentry)->i_sb->s_umount);
+			} else if (pg && !IS_ERR(pg)) {
+				put_page(pg);
+			}
+			path_put(&_cp);
 		}
 	}
 }
