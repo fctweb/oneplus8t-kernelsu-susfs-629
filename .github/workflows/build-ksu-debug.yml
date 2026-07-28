@@ -27,7 +27,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Cache apt packages
+        id: cache-apt
+        uses: actions/cache@v4
+        with:
+          path: /var/cache/apt
+          key: apt-${{ runner.os }}-${{ hashFiles('.github/workflows/build-ksu-debug.yml') }}
+
       - name: Install build dependencies
+        if: steps.cache-apt.outputs.cache-hit != 'true'
         run: |
           apt-get update
           apt-get install -y \
@@ -49,9 +57,12 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.ccache
-          key: ccache-${{ runner.os }}-022-${{ hashFiles('.github/workflows/build-ksu-debug.yml', 'kernel-patches/*', 'scripts/inject-*.py', 'scripts/fix-*.py', 'build-boot-img.py', 'kernel-patches/ksu.config', 'kernel-patches/debug.config') }}
+          # Stable key — excludes inject scripts so ccache survives inject-only changes.
+          # restore-keys prefix-match previous caches on config/patch updates.
+          key: ccache-${{ runner.os }}-kcfg-${{ hashFiles('.github/workflows/build-ksu-debug.yml', 'kernel-patches/ksu.config', 'kernel-patches/debug.config') }}
           restore-keys: |
             ccache-${{ runner.os }}-
+            ccache-${{ runner.os }}-kcfg-
 
       - name: Cache Android clang toolchain
         id: cache-clang
@@ -654,7 +665,15 @@ jobs:
           echo "=== Verification ==="
           grep -c 'KSU_SETUID_HOOK_SIMPLIFIED' drivers/kernelsu/hook/setuid_hook.c 2>/dev/null || echo "0"
 
+      - name: Cache kernel .config
+        id: cache-config
+        uses: actions/cache@v4
+        with:
+          path: kernel/out/.config
+          key: kernel-config-${{ hashFiles('kernel-patches/ksu.config', 'kernel-patches/debug.config', 'kernel-patches/ksu.config.pure', '.github/workflows/build-ksu-debug.yml') }}
+
       - name: Configure kernel (device config + KSU + debug)
+        if: steps.cache-config.outputs.cache-hit != 'true'
         working-directory: kernel
         run: |
           export PATH="/tmp/clang-r450784d/bin:/usr/lib/ccache:$PATH"
@@ -771,11 +790,11 @@ jobs:
             echo "ksud binary: $(stat -c%s /tmp/ksud-ramdisk) bytes"
 
             echo "=== Downloading stock boot.img ==="
-            curl -fSL -o /tmp/stock-boot-ramdisk.img \
+            curl -fSL -o /tmp/stock-boot.img \
               "https://github.com/qcxl/oneplus8t-kernelsu-susfs-629/releases/download/v1-original-boot/boot.img"
 
             echo "=== Extracting and modifying ramdisk ==="
-            python3 scripts/inject-ksud-ramdisk.py /tmp/ksud-ramdisk /tmp/stock-boot-ramdisk.img /tmp/ramdisk-new.lz4
+            python3 scripts/inject-ksud-ramdisk.py /tmp/ksud-ramdisk /tmp/stock-boot.img /tmp/ramdisk-new.lz4
             echo "Ramdisk injection complete, saved to /tmp/ramdisk-new.lz4"
 
             echo "=== Verifying ksud in ramdisk ==="
@@ -802,11 +821,7 @@ jobs:
             cp /tmp/kernel-config.txt artifact/config.txt 2>/dev/null || true
             cp build-boot-img.py artifact/
 
-            # Download original boot.img and create KSU debug boot.img
-            echo "Downloading original boot.img from release..."
-            curl -fSL -o /tmp/stock-boot.img \
-              "https://github.com/qcxl/oneplus8t-kernelsu-susfs-629/releases/download/v1-original-boot/boot.img"
-
+            # Reuse stock boot.img from ramdisk step (already downloaded to /tmp/stock-boot.img)
             # Build boot.img (ramdisk injection disabled — repack unstable)
             # RAMDISK_OPT=""
             # if [ "$SKIP_RAMDISK" != "1" ] && [ -f "/tmp/ramdisk-new.lz4" ]; then
