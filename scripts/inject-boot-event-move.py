@@ -50,23 +50,25 @@ static void susfs_ensure_modules(void)
 	void *de;
 	struct writeback_control wbc;
 
-	/* Safe to always run at boot — modules/ is empty and the
-	 * f2fs entry for 'modules' either needs cleanup (stale
-	 * entry, ENOENT from userspace) or doesn't exist yet.
-	 * Resolve f2fs internals via kallsyms. */
+	/* Delete stale f2fs inline-dentry entry for 'modules', then
+	 * flush NODE pages so the cleared bitmap reaches disk.
+	 * Cannot mkdir here — fscrypt DE key not yet loaded at boot,
+	 * so call_usermodehelper(mkdir) hits ENOENT (fscrypt_prepare
+	 * _lookup fails).  User-space / KSU daemon creates the dirs
+	 * naturally on first module install. */
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
-	if (!fe_fn || !de_fn || !sync_fn)
+	if (!fe_fn || !de_fn || !sync_fn) {
+		pr_info("susfs: ensure f2fs kallsyms N/A\n");
 		return;
-
+	}
 	if (kern_path("/data/adb", 0, &_cp))
 		return;
-
 	de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
 	if (de && pg && !IS_ERR(pg)) {
 		de_fn(de, pg, d_inode(_cp.dentry), NULL);
-		pr_info("susfs: deleted stale entry\n");
+		pr_info("susfs: deleted stale 'modules'\n");
 		memset(&wbc, 0, sizeof(wbc));
 		wbc.sync_mode = WB_SYNC_ALL;
 		wbc.nr_to_write = LONG_MAX;
@@ -76,13 +78,6 @@ static void susfs_ensure_modules(void)
 		put_page(pg);
 	}
 	path_put(&_cp);
-
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
-		NULL, UMH_WAIT_PROC);
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules_update", NULL},
-		NULL, UMH_WAIT_PROC);
 }
 
 static void susfs_restore_boot(void)
