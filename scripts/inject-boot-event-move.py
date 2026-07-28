@@ -50,22 +50,28 @@ static void susfs_ensure_modules(void)
 	void *de;
 	struct writeback_control wbc;
 
-	/* Check if modules/ is already accessible from USERSPACE.
-	 * call_usermodehelper runs as a userspace process with full
-	 * VFS access — kern_path from PID 1 can succeed even for
-	 * stale entries that userspace cannot access. */
-	if (call_usermodehelper("/system/bin/test",
-		(char *[]){"test", "-d", "/data/adb/modules", NULL},
-		NULL, UMH_WAIT_PROC) == 0)
+	/* Check if modules/ is TRULY accessible from userspace.
+	 * call_usermodehelper runs as u:r:kernel:s0 which can access
+	 * stale entries — use a write test instead of test -d. */
+	if (call_usermodehelper("/system/bin/sh",
+		(char *[]){"sh", "-c",
+			   "> /data/adb/modules/.susfs_test 2>/dev/null",
+			   NULL},
+		NULL, UMH_WAIT_PROC) == 0) {
+		/* Clean up and return — directory is accessible */
+		call_usermodehelper("/system/bin/rm",
+			(char *[]){"rm", "-f",
+				   "/data/adb/modules/.susfs_test", NULL},
+			NULL, UMH_WAIT_PROC);
 		return;
+	}
 
-	/* Resolve f2fs internal functions via kallsyms.
-	 * KSU module cannot include f2fs headers (private driver header). */
+	/* Resolve f2fs internal functions via kallsyms. */
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
 	if (!fe_fn || !de_fn || !sync_fn) {
-		pr_info("susfs: ensure_modules f2fs kallsyms unavailable\n");
+		pr_info("susfs: ensure f2fs kallsyms unavailable\n");
 		return;
 	}
 
@@ -79,8 +85,7 @@ static void susfs_ensure_modules(void)
 
 		/* Force flush dirty NODE pages to disk.
 		 * sync_filesystem does NOT flush node pages because
-		 * f2fs node_inode is NOT in sb->s_inodes, so
-		 * sync_inodes_sb never calls f2fs_write_node_pages. */
+		 * f2fs node_inode is NOT in sb->s_inodes. */
 		memset(&wbc, 0, sizeof(wbc));
 		wbc.sync_mode = WB_SYNC_ALL;
 		wbc.nr_to_write = LONG_MAX;
@@ -91,7 +96,7 @@ static void susfs_ensure_modules(void)
 	}
 	path_put(&_cp);
 
-	/* Create fresh modules/ from userspace (proper fscrypt context) */
+	/* Create fresh modules/ from true userspace (proper fscrypt) */
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
 		NULL, UMH_WAIT_PROC);
