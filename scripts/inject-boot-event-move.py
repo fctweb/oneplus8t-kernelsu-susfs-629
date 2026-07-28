@@ -46,29 +46,18 @@ static DECLARE_DELAYED_WORK(susfs_fixup_modules_dwork,
 
 /* Fix stale f2fs entry for 'modules' — runs 30s after boot so
  * the fscrypt DE key is loaded.  Strategy:
- * 1. Try call_usermodehelper(mkdir -p /data/adb/modules).
- *    If it succeeds → directory already exists, no action needed.
- * 2. If it fails (ENOENT) → stale entry blocks creation.
- *    Delete via f2fs_delete_entry + flush NODE pages to disk.
- * 3. Retry call_usermodehelper(mkdir -p) — should succeed now. */
+ * 1. f2fs_find_entry + f2fs_delete_entry (unconditionally)
+ * 2. f2fs_sync_node_pages to flush NODE dirty pages to disk
+ * 3. call_usermodehelper(mkdir -p) to create fresh accessible dirs
+ *
+ * Cannot use mkdir as a detection — call_usermodehelper runs as kernel
+ * context which can access stale entries.  Always run the cleanup. */
 static void susfs_fixup_modules_work(struct work_struct *work)
 {
 	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
 	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
 	int (*sync_fn)(void *, struct writeback_control *, int, int);
 
-	/* Phase 1: try mkdir — succeeds if directory already exists
-	 * or if the stale entry was already cleaned up. */
-	if (call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
-		NULL, UMH_WAIT_PROC) == 0) {
-		pr_info("susfs: modules/ OK\n");
-		return;
-	}
-
-	pr_info("susfs: modules/ stale, fixing...\n");
-
-	/* Phase 2: f2fs-level stale entry cleanup */
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
 	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
@@ -97,7 +86,6 @@ static void susfs_fixup_modules_work(struct work_struct *work)
 		}
 	}
 
-	/* Phase 3: retry mkdir — should succeed after cleanup */
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p", "/data/adb/modules", NULL},
 		NULL, UMH_WAIT_PROC);
