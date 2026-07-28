@@ -327,6 +327,7 @@ def main():
         '#include <linux/slab.h>\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
+        'static void susfs_cleanup_stale_modules(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
         'extern void susfs_apply_module_updates(void);\n'
