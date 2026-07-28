@@ -28,6 +28,10 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 /* Phase 1 — delete stale f2fs entry if present.
  * Runs 30s after boot when fscrypt DE key is available
  * (f2fs_find_entry needs the key to resolve encrypted names). */
+static void susfs_fixup_modules_phase2(struct work_struct *work);
+static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase2_dwork,
+			    susfs_fixup_modules_phase2);
+
 static void susfs_fixup_modules_phase1(struct work_struct *work)
 {
 	pr_info("susfs: fixup phase-1 (30s)\n");
@@ -39,10 +43,6 @@ static void susfs_fixup_modules_phase1(struct work_struct *work)
 }
 
 /* Phase 2 — 120s after boot: ensure modules exist, move pending modules */
-static void susfs_fixup_modules_phase2(struct work_struct *work);
-static DECLARE_DELAYED_WORK(susfs_fixup_modules_phase2_dwork,
-			    susfs_fixup_modules_phase2);
-
 static void susfs_fixup_modules_phase2(struct work_struct *work)
 {
 	pr_info("susfs: fixup phase-2 (120s)\n");
