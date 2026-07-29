@@ -99,35 +99,39 @@ static void susfs_cleanup_stale_modules(void)
 	}
 }
 
-/* Delayed cleanup: runs 35s after boot (measured from #613 log).
- * Checks fscrypt key availability first.  If key not loaded yet
- * (i_crypt_info == NULL), reschedules every 10s until key is ready.
- * This avoids race conditions with varying fscrypt init times. */
+/* Delayed cleanup: first run at 35s after boot (measured from #613).
+ * Checks fscrypt key availability before proceeding (i_crypt_info).
+ * If key not loaded yet, reschedules every 10s (max 5 retries).
+ * After cleanup (success or skip), calls susfs_apply_module_updates
+ * to move any modules still pending in modules_update/. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
+	static int retries = 0;
+	struct path _cp;
+
 	pr_info("susfs: delayed cleanup\n");
 
-	/* Wait until fscrypt key is loaded for /data/adb/ */
-	{
-		struct path _cp;
-		if (kern_path("/data/adb", 0, &_cp)) {
-			/* /data/adb/ not accessible yet — reschedule */
-			goto reschedule;
-		}
-		if (d_inode(_cp.dentry)->i_crypt_info == NULL) {
-			/* fscrypt key not loaded yet — retry later */
+	if (kern_path("/data/adb", 0, &_cp) == 0) {
+		/* Only wait for key if dir is actually encrypted */
+		if (IS_ENCRYPTED(d_inode(_cp.dentry)) &&
+		    d_inode(_cp.dentry)->i_crypt_info == NULL) {
 			path_put(&_cp);
-			pr_info("susfs: cleanup waiting for fscrypt key\n");
-			goto reschedule;
+			if (++retries < 5) {
+				pr_info("susfs: cleanup waiting for fscrypt"
+					" key (retry %d/5)\n", retries);
+				schedule_delayed_work(&susfs_cleanup_dwork,
+						     msecs_to_jiffies(10000));
+			} else {
+				pr_info("susfs: cleanup gave up after 5"
+					" retries\n");
+			}
+			return;
 		}
 		path_put(&_cp);
 	}
 
 	susfs_cleanup_stale_modules();
-	return;
-
-reschedule:
-	schedule_delayed_work(&susfs_cleanup_dwork, msecs_to_jiffies(10000));
+	susfs_apply_module_updates();
 }
 
 static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
