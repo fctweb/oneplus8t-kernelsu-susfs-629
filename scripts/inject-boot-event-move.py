@@ -66,6 +66,35 @@ static void susfs_cleanup_stale_modules(void)
 	path_put(&_cp);
 }
 
+/* Kernel-side mkdir -p: ensure path exists using VFS operations.
+ * This is safer than call_usermodehelper which spawns a process in
+ * kernel SELinux context that may not have adb_data_file access. */
+static int susfs_ensure_dir(const char *path)
+{
+	struct path p;
+	struct dentry *d;
+	int err;
+
+	err = kern_path(path, LOOKUP_PARENT, &p);
+	if (err) return err;
+
+	d = lookup_one_len(strrchr(path, '/') + 1, p.dentry,
+			   strlen(strrchr(path, '/') + 1));
+	if (IS_ERR(d)) { path_put(&p); return PTR_ERR(d); }
+
+	if (d_really_is_positive(d)) {
+		/* Already exists */
+		dput(d);
+		path_put(&p);
+		return 0;
+	}
+
+	err = vfs_mkdir(d_inode(p.dentry), d, 0755);
+	dput(d);
+	path_put(&p);
+	return err;
+}
+
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
  * Deletes stale entry, re-creates modules/ and modules_update/,
  * then moves any pending modules from staging to active. */
@@ -76,15 +105,10 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 	printk(KERN_INFO "susfs: delayed cleanup\n");
 	susfs_cleanup_stale_modules();
 
-	/* Use ksu_cred for mkdir VFS access (workqueue runs in init context,
-	 * which SELinux may deny from writing to adb_data_file). */
 	if (ksu_cred) {
 		old = override_creds(ksu_cred);
-		call_usermodehelper("/system/bin/mkdir",
-			(char *[]){"mkdir", "-p",
-				   "/data/adb/modules",
-				   "/data/adb/modules_update", NULL},
-			NULL, UMH_WAIT_PROC);
+		susfs_ensure_dir("/data/adb/modules");
+		susfs_ensure_dir("/data/adb/modules_update");
 		susfs_apply_module_updates();
 		revert_creds(old);
 	}
@@ -350,6 +374,7 @@ def main():
         '#include <linux/slab.h>\n'
         '#include <linux/workqueue.h>\n'
         '#include <linux/cred.h>\n'
+        '#include <linux/namei.h>\n'
         '#include \"ksu.h\"\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
