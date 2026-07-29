@@ -116,7 +116,6 @@ static void susfs_restore_boot(void)
 			      msecs_to_jiffies(35000));
 	{
 		static const char * const paths[] = {
-		static const char * const paths[] = {
 			"/system/bin/su",
 			"/odm/bin/su",
 			"/data/adb/ksu/su",
