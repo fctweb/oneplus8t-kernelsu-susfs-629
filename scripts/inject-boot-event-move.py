@@ -20,22 +20,26 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Clean up stale f2fs inline-dentry entry for 'modules'.
- * The stale entry is created when LineageOS first-boot scripts try
- * to mkdir /data/adb/modules before the fscrypt DE key is loaded.
- * It causes f2fs_lookup to return -ENOENT from userspace, blocking
- * all further access to that path.  f2fs_find_entry (PID 1 context
- * WITHOUT fscrypt key) can still find it via the inline dentries. */
+/* Try to remove stale f2fs inline-dentry for 'modules' ONLY when the
+ * path truly does not resolve.  If /data/adb/modules/ already exists
+ * (e.g. just created by susfs_move_one), the entry is valid — do not
+ * delete it or we will orphan the directory. */
 static void susfs_cleanup_stale_modules(void)
 {
 	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
 	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
 	int (*sync_fn)(void *, struct writeback_control *, int, int);
-	struct path _cp;
+	struct path _cp, _mp;
 	struct qstr qn = QSTR_INIT("modules", 7);
 	struct page *pg = NULL;
 	void *de;
 	struct writeback_control wbc;
+
+	/* If modules/ resolves, entry is valid — skip */
+	if (kern_path("/data/adb/modules", 0, &_mp) == 0) {
+		path_put(&_mp);
+		return;
+	}
 
 	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
 	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
