@@ -62,7 +62,16 @@ static void susfs_restore_boot(void)
 #endif
 
 	susfs_restore_properties();
-	susfs_apply_module_updates();
+
+	/* Move any modules left in staging to active.
+	 * Override creds to KSU domain (permissive) so VFS operations
+	 * succeed from PID 1 context (init SELinux context may lack
+	 * access to adb_data_file on some kernels). */
+	{
+		const struct cred *old = override_creds(ksu_cred);
+		susfs_apply_module_updates();
+		revert_creds(old);
+	}
 
 	susfs_boot_restored = true;
 	pr_info("susfs: boot restore complete\n");
@@ -252,6 +261,8 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
+        '#include <linux/cred.h>\n'
+        '#include \"ksu.h\"\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
