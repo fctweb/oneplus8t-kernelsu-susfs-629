@@ -20,9 +20,80 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
+/* Clean up stale f2fs inline-dentry entry for 'modules'.
+ * The stale entry is created when LineageOS first-boot scripts try
+ * to mkdir /data/adb/modules before the fscrypt DE key is loaded.
+ * It causes f2fs_lookup to return -ENOENT from userspace, blocking
+ * all further access to that path.  f2fs_find_entry (PID 1 context
+ * WITHOUT fscrypt key) can still find it via the inline dentries. */
+static void susfs_cleanup_stale_modules(void)
+{
+	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
+	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
+	int (*sync_fn)(void *, struct writeback_control *, int, int);
+	struct path _cp;
+	struct qstr qn = QSTR_INIT("modules", 7);
+	struct page *pg = NULL;
+	void *de;
+	struct writeback_control wbc;
+
+	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
+	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
+	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
+	if (!fe_fn || !de_fn || !sync_fn) {
+		printk(KERN_INFO "susfs: cleanup unavailable\n");
+		return;
+	}
+	if (kern_path("/data/adb", 0, &_cp))
+		return;
+
+	de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
+	if (de && pg && !IS_ERR(pg)) {
+		unsigned long ino = *(const __le32 *)((const u8 *)de + 4);
+		printk(KERN_INFO "susfs: found stale entry ino=%lu\n",
+		       le32_to_cpu(ino));
+		de_fn(de, pg, d_inode(_cp.dentry), NULL);
+		printk(KERN_INFO "susfs: cleaned stale entry\n");
+		shrink_dcache_parent(d_inode(_cp.dentry)->i_sb->s_root);
+		memset(&wbc, 0, sizeof(wbc));
+		wbc.sync_mode = WB_SYNC_ALL;
+		wbc.nr_to_write = LONG_MAX;
+		sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info, &wbc, 0, 0);
+		printk(KERN_INFO "susfs: flushed node pages\n");
+	} else if (pg && !IS_ERR(pg)) {
+		put_page(pg);
+	}
+	path_put(&_cp);
+}
+
+/* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
+ * Deletes stale entry, re-creates modules/ and modules_update/,
+ * then moves any pending modules from staging to active. */
+static void susfs_cleanup_dwork_fn(struct work_struct *work)
+{
+	printk(KERN_INFO "susfs: delayed cleanup\n");
+	susfs_cleanup_stale_modules();
+
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p",
+			   "/data/adb/modules",
+			   "/data/adb/modules_update", NULL},
+		NULL, UMH_WAIT_PROC);
+
+	susfs_apply_module_updates();
+}
+
+static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
+
 static void susfs_restore_boot(void)
 {
 	int i;
+
+	/* Schedule stale-entry cleanup at 35s (when fscrypt key loaded).
+	 * Must be done async — f2fs_find_entry needs the key to resolve
+	 * encrypted filenames in inline dentries. */
+	schedule_delayed_work(&susfs_cleanup_dwork,
+			      msecs_to_jiffies(35000));
 
 	{
 		static const char * const paths[] = {
@@ -261,8 +332,10 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
+        '#include <linux/workqueue.h>\n'
         '#include <linux/cred.h>\n'
         '#include \"ksu.h\"\n'
+        'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
