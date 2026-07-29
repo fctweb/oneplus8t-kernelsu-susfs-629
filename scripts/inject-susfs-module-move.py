@@ -44,9 +44,9 @@ def main():
         print("  supercall.c already injected, skipping")
         return
 
-    # 2. Add include for ksud_boot.h after sulog/event.h
+    # 2. Add includes for cred.h + ksud_boot.h after sulog/event.h
     old_include = '#include "sulog/event.h"'
-    new_include = old_include + '\n#include "runtime/ksud_boot.h"\n'
+    new_include = old_include + '\n#include <linux/cred.h>\n#include "runtime/ksud_boot.h"\n'
     content = content.replace(old_include, new_include, 1)
 
     # 3. Replace anon_ksu_release() — synchronous call, no workqueue.
@@ -62,12 +62,17 @@ def main():
 {
 \tpr_info("ksu fd released\\n");
 #ifdef CONFIG_KSU_SUSFS
-\t/* Only run module move if process still has a valid filesystem
-\t * context.  During process exit, exit_fs() clears current->fs
-\t * BEFORE __fput calls ->release, making VFS ops (filp_open →
-\t * path_init → set_root) crash with NULL dereference. */
-\tif (current->fs)
+\t/* Module install just completed — move staging modules to active.
+\t * Override creds to KSU root domain (u:r:ksu:s0, permissive) to
+\t * bypass SELinux checks, since the calling process (e.g. prebuilt
+\t * ksud) may run as u:r:shell:s0 which lacks VFS access to
+\t * /data/adb/modules/.  Also guard against process exit where
+\t * current->fs has been cleaned up by exit_fs(). */
+\tif (current->fs) {
+\t\tconst struct cred *old = override_creds(ksu_cred);
 \t\tsusfs_apply_module_updates();
+\t\trevert_creds(old);
+\t}
 #endif
 \treturn 0;
 }'''
