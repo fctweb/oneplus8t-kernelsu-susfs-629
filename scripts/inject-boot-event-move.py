@@ -99,6 +99,10 @@ static void susfs_cleanup_stale_modules(void)
 	}
 }
 
+static void susfs_cleanup_dwork_fn(struct work_struct *work);
+
+static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
+
 /* Delayed cleanup: first run at 35s after boot (measured from #613).
  * Checks fscrypt key availability before proceeding (i_crypt_info).
  * If key not loaded yet, reschedules every 10s (max 5 retries).
@@ -133,8 +137,6 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 	susfs_cleanup_stale_modules();
 	susfs_apply_module_updates();
 }
-
-static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
 
 static void susfs_restore_boot(void)
 {
