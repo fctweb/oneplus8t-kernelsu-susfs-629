@@ -74,23 +74,26 @@ static void susfs_cleanup_stale_modules(void)
 			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
 				&wbc, 0, 0);
 			pr_info("susfs: flushed node pages\n");
+
+			/* Create fresh dirs from userspace */
+			call_usermodehelper("/system/bin/mkdir",
+				(char *[]){"mkdir", "-p",
+					   "/data/adb/modules",
+					   "/data/adb/modules_update",
+					   NULL},
+				NULL, UMH_WAIT_PROC);
+
+			/* Mark as fixed */
+			call_usermodehelper("/system/bin/sh",
+				(char *[]){"sh", "-c",
+					   "> /data/adb/.susfs_fixed",
+					   NULL},
+				NULL, UMH_WAIT_PROC);
 		} else if (pg && !IS_ERR(pg)) {
 			put_page(pg);
 		}
 		path_put(&_cp);
 	}
-
-	/* Create fresh dirs from userspace (mkdir may fail if fscrypt
-	 * key not loaded yet — that's OK, KSU daemon creates them later) */
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules",
-			   "/data/adb/modules_update", NULL},
-		NULL, UMH_WAIT_PROC);
-
-	/* Mark as fixed */
-	call_usermodehelper("/system/bin/sh",
-		(char *[]){"sh", "-c", "> /data/adb/.susfs_fixed", NULL},
-		NULL, UMH_WAIT_PROC);
 }
 
 /* Delayed cleanup: runs 35s after boot when fscrypt kernel key is
