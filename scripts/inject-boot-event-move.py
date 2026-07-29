@@ -210,7 +210,7 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 /* ── Move module from staging to active ──────────────────────── */
 static void susfs_move_one(const char *name)
 {
-	char old_path[256], new_path[256];
+	char old_path[256], new_path[256], prop_path[256];
 	struct path old_p = {}, new_p = {}, modules_dir = {};
 	struct dentry *new_dentry;
 	int err, namlen = strlen(name);
@@ -226,6 +226,15 @@ static void susfs_move_one(const char *name)
 		return;
 	}
 	printk(KERN_INFO "susfs: move_one '%s' source found\n", name);
+
+	/* Check if module already active — skip if module.prop exists */
+	scnprintf(prop_path, sizeof(prop_path), "/data/adb/modules/%s/module.prop", name);
+	if (kern_path(prop_path, 0, &new_p) == 0) {
+		printk(KERN_INFO "susfs: move_one '%s' already active, skipping\n", name);
+		path_put(&new_p);
+		path_put(&old_p);
+		return;
+	}
 
 	err = kern_path("/data/adb/modules", 0, &modules_dir);
 	if (err) {
