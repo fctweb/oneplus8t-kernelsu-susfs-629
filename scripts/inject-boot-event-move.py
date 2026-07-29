@@ -20,65 +20,14 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* Try to remove stale f2fs inline-dentry for 'modules' ONLY when the
- * path truly does not resolve.  If /data/adb/modules/ already exists
- * (e.g. just created by susfs_move_one), the entry is valid — do not
- * delete it or we will orphan the directory. */
-static void susfs_cleanup_stale_modules(void)
-{
-	void *(*fe_fn)(struct inode *, const struct qstr *, struct page **);
-	void *(*de_fn)(void *, struct page *, struct inode *, struct inode *);
-	int (*sync_fn)(void *, struct writeback_control *, int, int);
-	struct path _cp, _mp;
-	struct qstr qn = QSTR_INIT("modules", 7);
-	struct page *pg = NULL;
-	void *de;
-	struct writeback_control wbc;
-
-	/* If modules/ resolves, entry is valid — skip */
-	if (kern_path("/data/adb/modules", 0, &_mp) == 0) {
-		path_put(&_mp);
-		return;
-	}
-
-	fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-	de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-	sync_fn = (void *)kallsyms_lookup_name("f2fs_sync_node_pages");
-	if (!fe_fn || !de_fn || !sync_fn) {
-		printk(KERN_INFO "susfs: cleanup unavailable\n");
-		return;
-	}
-	if (kern_path("/data/adb", 0, &_cp))
-		return;
-
-	de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-	if (de && pg && !IS_ERR(pg)) {
-		unsigned long ino = *(const __le32 *)((const u8 *)de + 4);
-		printk(KERN_INFO "susfs: found stale entry ino=%lu\n",
-		       le32_to_cpu(ino));
-		de_fn(de, pg, d_inode(_cp.dentry), NULL);
-		printk(KERN_INFO "susfs: cleaned stale entry\n");
-		shrink_dcache_parent(d_inode(_cp.dentry)->i_sb->s_root);
-		memset(&wbc, 0, sizeof(wbc));
-		wbc.sync_mode = WB_SYNC_ALL;
-		wbc.nr_to_write = LONG_MAX;
-		sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info, &wbc, 0, 0);
-		printk(KERN_INFO "susfs: flushed node pages\n");
-	} else if (pg && !IS_ERR(pg)) {
-		put_page(pg);
-	}
-	path_put(&_cp);
-}
-
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
- * Deletes stale entry, then moves any pending modules from staging
- * to active. susfs_move_one will create /data/adb/modules/ if needed. */
+ * Moves any pending modules from staging to active.
+ * susfs_move_one will create /data/adb/modules/ if needed. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
 	const struct cred *old;
 
 	printk(KERN_INFO "susfs: delayed cleanup\n");
-	susfs_cleanup_stale_modules();
 
 	if (ksu_cred) {
 		old = override_creds(ksu_cred);
@@ -374,7 +323,7 @@ def main():
         '#include <linux/cred.h>\n'
         '#include <linux/namei.h>\n'
         '#include \"ksu.h\"\n'
-        'extern unsigned long kallsyms_lookup_name(const char *name);\n'
+
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
