@@ -135,6 +135,16 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 	}
 
 	susfs_cleanup_stale_modules();
+
+	/* Ensure modules/ and modules_update/ exist before move.
+	 * mkdir -p from call_usermodehelper at ~40s may still fail
+	 * (fscrypt key not available for userspace), but if so the
+	 * next boot's cleanup will create them when key IS ready. */
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p", "/data/adb/modules",
+			   "/data/adb/modules_update", NULL},
+		NULL, UMH_WAIT_PROC);
+
 	susfs_apply_module_updates();
 }
 
