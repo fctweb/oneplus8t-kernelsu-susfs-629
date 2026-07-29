@@ -22,16 +22,19 @@ static bool susfs_boot_restored __read_mostly = false;
 
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
  * Ensures modules/ exists, then moves any pending modules.
- * Must NOT use override_creds(ksu_cred) — the ksu domain makes
- * kern_path("/data/adb/modules") return -ENOENT on this kernel. */
+ * Uses rename workaround for f2fs stale inline dentry: mkdir a temp
+ * name then mv to "modules" — rename uses a different code path
+ * in f2fs that bypasses the stale dentry check. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
 	printk(KERN_INFO "susfs: delayed cleanup\n");
 
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p",
-			   "/data/adb/modules",
-			   "/data/adb/modules_update", NULL},
+	call_usermodehelper("/system/bin/sh",
+		(char *[]){"sh", "-c",
+			   "mkdir /data/adb/.susfs_tmp 2>/dev/null; "
+			   "mv /data/adb/.susfs_tmp /data/adb/modules 2>/dev/null; "
+			   "mkdir -p /data/adb/modules_update 2>/dev/null || true",
+			   NULL},
 		NULL, UMH_WAIT_PROC);
 
 	susfs_apply_module_updates();

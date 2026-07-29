@@ -58,21 +58,23 @@ def main():
 \treturn 0;
 }'''
 
-    new_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
-{
-\tpr_info("ksu fd released\\n");
-#ifdef CONFIG_KSU_SUSFS
-\t/* Module install just completed — move staging modules to active.
-\t * Override creds to KSU root domain (u:r:ksu:s0, permissive) to
-\t * bypass SELinux checks. Only skip if ksu_cred isn't ready yet. */
-\tif (ksu_cred) {
-\t\tconst struct cred *old = override_creds(ksu_cred);
-\t\tsusfs_apply_module_updates();
-\t\trevert_creds(old);
-\t}
-#endif
-\treturn 0;
-}'''
+     new_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
+ {
+  \tpr_info("ksu fd released\\n");
+  #ifdef CONFIG_KSU_SUSFS
+  \t/* Module install just completed — move staging modules to active.
+  \t * Override creds to KSU root domain (u:r:ksu:s0, permissive) to
+  \t * bypass SELinux checks. Guard current->fs: on some ksud code
+  \t * paths the fd is closed from a context without fs (kthread,
+  \t * unshare). Without this guard the VFS operations crash. */
+  \tif (current->fs && ksu_cred) {
+  \t\tconst struct cred *old = override_creds(ksu_cred);
+  \t\tsusfs_apply_module_updates();
+  \t\trevert_creds(old);
+  \t}
+  #endif
+  \treturn 0;
+  }'''
 
     content = content.replace(old_release, new_release, 1)
 
