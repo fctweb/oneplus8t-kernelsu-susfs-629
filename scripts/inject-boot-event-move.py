@@ -66,46 +66,9 @@ static void susfs_cleanup_stale_modules(void)
 	path_put(&_cp);
 }
 
-/* Kernel-side mkdir -p: ensure path exists using VFS operations.
- * This is safer than call_usermodehelper which spawns a process in
- * kernel SELinux context that may not have adb_data_file access. */
-static int susfs_ensure_dir(const char *path)
-{
-	struct path p;
-	struct dentry *d;
-	int err;
-
-	err = kern_path(path, LOOKUP_PARENT, &p);
-	if (err) {
-		printk(KERN_INFO "susfs: ensure_dir '%s' parent lookup err=%d\n", path, err);
-		return err;
-	}
-
-	d = lookup_one_len(strrchr(path, '/') + 1, p.dentry,
-			   strlen(strrchr(path, '/') + 1));
-	if (IS_ERR(d)) {
-		printk(KERN_INFO "susfs: ensure_dir '%s' lookup err=%ld\n", path, PTR_ERR(d));
-		path_put(&p);
-		return PTR_ERR(d);
-	}
-
-	if (d_really_is_positive(d)) {
-		printk(KERN_INFO "susfs: ensure_dir '%s' already exists\n", path);
-		dput(d);
-		path_put(&p);
-		return 0;
-	}
-
-	err = vfs_mkdir(d_inode(p.dentry), d, 0755);
-	printk(KERN_INFO "susfs: ensure_dir '%s' mkdir err=%d\n", path, err);
-	dput(d);
-	path_put(&p);
-	return err;
-}
-
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
- * Deletes stale entry, re-creates modules/ and modules_update/,
- * then moves any pending modules from staging to active. */
+ * Deletes stale entry, then moves any pending modules from staging
+ * to active. susfs_move_one will create /data/adb/modules/ if needed. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
 	const struct cred *old;
@@ -115,8 +78,6 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 
 	if (ksu_cred) {
 		old = override_creds(ksu_cred);
-		susfs_ensure_dir("/data/adb/modules");
-		susfs_ensure_dir("/data/adb/modules_update");
 		susfs_apply_module_updates();
 		revert_creds(old);
 	}
@@ -244,7 +205,7 @@ static void susfs_move_one(const char *name)
 {
 	char old_path[256], new_path[256], prop_path[256];
 	struct path old_p = {}, new_p = {}, modules_dir = {};
-	struct dentry *new_dentry;
+	struct dentry *new_dentry, *target_parent;
 	int err, namlen = strlen(name);
 
 	printk(KERN_INFO "susfs: move_one '%s' begin\n", name);
@@ -268,11 +229,36 @@ static void susfs_move_one(const char *name)
 		return;
 	}
 
+	/* Ensure /data/adb/modules/ exists (create if needed) */
 	err = kern_path("/data/adb/modules", 0, &modules_dir);
 	if (err) {
-		printk(KERN_INFO "susfs: move_one '%s' modules/ err=%d, deferring\n", name, err);
-		path_put(&old_p);
-		return;
+		printk(KERN_INFO "susfs: move_one '%s' creating modules/ dir\n", name);
+		err = kern_path("/data/adb", 0, &new_p);
+		if (err) {
+			printk(KERN_INFO "susfs: move_one '%s' /data/adb/ err=%d\n", name, err);
+			path_put(&old_p);
+			return;
+		}
+		target_parent = lookup_one_len("modules", new_p.dentry, 7);
+		if (IS_ERR(target_parent)) {
+			printk(KERN_INFO "susfs: move_one '%s' lookup modules err=%ld\n", name, PTR_ERR(target_parent));
+			path_put(&new_p);
+			path_put(&old_p);
+			return;
+		}
+		if (!d_really_is_positive(target_parent)) {
+			err = vfs_mkdir(d_inode(new_p.dentry), target_parent, 0755);
+			printk(KERN_INFO "susfs: move_one '%s' vfs_mkdir modules err=%d\n", name, err);
+		}
+		dput(target_parent);
+		path_put(&new_p);
+		/* Retry kern_path after mkdir */
+		err = kern_path("/data/adb/modules", 0, &modules_dir);
+		if (err) {
+			printk(KERN_INFO "susfs: move_one '%s' modules/ still err=%d\n", name, err);
+			path_put(&old_p);
+			return;
+		}
 	}
 
 	new_dentry = lookup_one_len(name, modules_dir.dentry, namlen);
