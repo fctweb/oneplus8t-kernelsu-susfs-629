@@ -99,15 +99,35 @@ static void susfs_cleanup_stale_modules(void)
 	}
 }
 
-/* Delayed cleanup: runs 35s after boot when fscrypt kernel key is
- * loaded (confirmed by #613 log: f2fs_find_entry succeeds at 35s).
- * Does NOT call usermodehelper mkdir (userspace fscrypt key not
- * available until ~50s) — directories are created naturally by
- * ksud install_module_to_system via ensure_dir_exists. */
+/* Delayed cleanup: runs 35s after boot (measured from #613 log).
+ * Checks fscrypt key availability first.  If key not loaded yet
+ * (i_crypt_info == NULL), reschedules every 10s until key is ready.
+ * This avoids race conditions with varying fscrypt init times. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
 	pr_info("susfs: delayed cleanup\n");
+
+	/* Wait until fscrypt key is loaded for /data/adb/ */
+	{
+		struct path _cp;
+		if (kern_path("/data/adb", 0, &_cp)) {
+			/* /data/adb/ not accessible yet — reschedule */
+			goto reschedule;
+		}
+		if (d_inode(_cp.dentry)->i_crypt_info == NULL) {
+			/* fscrypt key not loaded yet — retry later */
+			path_put(&_cp);
+			pr_info("susfs: cleanup waiting for fscrypt key\n");
+			goto reschedule;
+		}
+		path_put(&_cp);
+	}
+
 	susfs_cleanup_stale_modules();
+	return;
+
+reschedule:
+	schedule_delayed_work(&susfs_cleanup_dwork, msecs_to_jiffies(10000));
 }
 
 static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
