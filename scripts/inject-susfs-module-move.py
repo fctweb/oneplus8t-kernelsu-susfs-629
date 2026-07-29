@@ -44,9 +44,9 @@ def main():
         print("  supercall.c already injected, skipping")
         return
 
-    # 2. Add includes for cred.h + ksud_boot.h after sulog/event.h
+    # 2. Add includes for cred.h + ksu.h + ksud_boot.h after sulog/event.h
     old_include = '#include "sulog/event.h"'
-    new_include = old_include + '\n#include <linux/cred.h>\n#include "runtime/ksud_boot.h"\n'
+    new_include = old_include + '\n#include <linux/cred.h>\n#include "ksu.h"\n#include "runtime/ksud_boot.h"\n'
     content = content.replace(old_include, new_include, 1)
 
     # 3. Replace anon_ksu_release() — synchronous call, no workqueue.
