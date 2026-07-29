@@ -93,11 +93,29 @@ static void susfs_cleanup_stale_modules(void)
 		NULL, UMH_WAIT_PROC);
 }
 
+/* Delayed cleanup: runs 35s after boot when fscrypt kernel key is
+ * loaded (confirmed by #613 log: f2fs_find_entry succeeds at 35s).
+ * Does NOT call usermodehelper mkdir (userspace fscrypt key not
+ * available until ~50s) — directories are created naturally by
+ * ksud install_module_to_system via ensure_dir_exists. */
+static void susfs_cleanup_dwork_fn(struct work_struct *work)
+{
+	pr_info("susfs: delayed cleanup\n");
+	susfs_cleanup_stale_modules();
+}
+
+static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
+
 static void susfs_restore_boot(void)
 {
 	int i;
 
+	/* Schedule cleanup 35s after boot — #613 log confirms
+	 * f2fs_find_entry works at 35s (fscrypt kernel key available). */
+	schedule_delayed_work(&susfs_cleanup_dwork,
+			      msecs_to_jiffies(35000));
 	{
+		static const char * const paths[] = {
 		static const char * const paths[] = {
 			"/system/bin/su",
 			"/odm/bin/su",
@@ -325,6 +343,7 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
+        '#include <linux/workqueue.h>\n'
         'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
         'static void susfs_cleanup_stale_modules(void);\n'
