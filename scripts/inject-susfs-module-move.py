@@ -62,7 +62,12 @@ def main():
 {
 \tpr_info("ksu fd released\\n");
 #ifdef CONFIG_KSU_SUSFS
-\tsusfs_apply_module_updates();
+\t/* Only run module move if process still has a valid filesystem
+\t * context.  During process exit, exit_fs() clears current->fs
+\t * BEFORE __fput calls ->release, making VFS ops (filp_open →
+\t * path_init → set_root) crash with NULL dereference. */
+\tif (current->fs)
+\t\tsusfs_apply_module_updates();
 #endif
 \treturn 0;
 }'''
