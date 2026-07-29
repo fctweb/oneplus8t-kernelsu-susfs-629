@@ -20,143 +20,53 @@ SUSFS_BLOCK = r"""
 #ifdef CONFIG_KSU_SUSFS
 static bool susfs_boot_restored __read_mostly = false;
 
-/* One-time stale f2fs entry cleanup.
- * Runs at boot on first install only.  After fixing, creates
- * /data/adb/.susfs_fixed so subsequent boots skip cleanup. */
-static void susfs_cleanup_stale_modules(void)
-{
-	struct path _flag_p;
-
-	pr_info("susfs: checking stale modules\n");
-
-	/* Skip if already fixed — use kern_path (reliable from PID 1).
-	 * Do NOT use call_usermodehelper(test -f) — kernel context
-	 * always returns 0 even for non-existent paths. */
-	if (kern_path("/data/adb/.susfs_fixed", 0, &_flag_p) == 0) {
-		path_put(&_flag_p);
-		pr_info("susfs: stale modules already fixed\n");
-		return;
-	}
-
-	/* Delete stale entry via f2fs internals */
-	{
-		void *(*fe_fn)(struct inode *, const struct qstr *,
-			       struct page **);
-		void *(*de_fn)(void *, struct page *, struct inode *,
-			      struct inode *);
-		int (*sync_fn)(void *, struct writeback_control *,
-			       int, int);
-		struct path _cp;
-		struct qstr qn = QSTR_INIT("modules", 7);
-		struct page *pg = NULL;
-		void *de;
-		struct writeback_control wbc;
-
-		fe_fn = (void *)kallsyms_lookup_name("f2fs_find_entry");
-		de_fn = (void *)kallsyms_lookup_name("f2fs_delete_entry");
-		sync_fn = (void *)kallsyms_lookup_name(
-			"f2fs_sync_node_pages");
-		if (!fe_fn || !de_fn || !sync_fn) {
-			pr_info("susfs: kallsyms lookup failed "
-				"fe=%p de=%p sync=%p\n",
-				fe_fn, de_fn, sync_fn);
-			return;
-		}
-		if (kern_path("/data/adb", 0, &_cp))
-			return;
-
-		de = fe_fn(d_inode(_cp.dentry), &qn, &pg);
-		if (de && pg && !IS_ERR(pg)) {
-			de_fn(de, pg, d_inode(_cp.dentry), NULL);
-			pr_info("susfs: cleaned stale entry\n");
-			shrink_dcache_parent(d_inode(_cp.dentry)
-					     ->i_sb->s_root);
-			memset(&wbc, 0, sizeof(wbc));
-			wbc.sync_mode = WB_SYNC_ALL;
-			wbc.nr_to_write = LONG_MAX;
-			sync_fn(d_inode(_cp.dentry)->i_sb->s_fs_info,
-				&wbc, 0, 0);
-			pr_info("susfs: flushed node pages\n");
-
-			/* Create fresh dirs from userspace */
-			call_usermodehelper("/system/bin/mkdir",
-				(char *[]){"mkdir", "-p",
-					   "/data/adb/modules",
-					   "/data/adb/modules_update",
-					   NULL},
-				NULL, UMH_WAIT_PROC);
-
-			/* Mark as fixed */
-			call_usermodehelper("/system/bin/sh",
-				(char *[]){"sh", "-c",
-					   "> /data/adb/.susfs_fixed",
-					   NULL},
-				NULL, UMH_WAIT_PROC);
-		} else if (pg && !IS_ERR(pg)) {
-			put_page(pg);
-		}
-		path_put(&_cp);
-	}
-}
-
-static void susfs_cleanup_dwork_fn(struct work_struct *work);
-
-static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
-
-/* Delayed cleanup: first run at 35s after boot (measured from #613).
- * Checks fscrypt key availability before proceeding (i_crypt_info).
- * If key not loaded yet, reschedules every 10s (max 5 retries).
- * After cleanup (success or skip), calls susfs_apply_module_updates
- * to move any modules still pending in modules_update/. */
-static void susfs_cleanup_dwork_fn(struct work_struct *work)
-{
-	static int retries = 0;
-	struct path _cp;
-
-	pr_info("susfs: delayed cleanup\n");
-
-	if (kern_path("/data/adb", 0, &_cp) == 0) {
-		/* Only wait for key if dir is actually encrypted */
-		if (IS_ENCRYPTED(d_inode(_cp.dentry)) &&
-		    d_inode(_cp.dentry)->i_crypt_info == NULL) {
-			path_put(&_cp);
-			if (++retries < 5) {
-				pr_info("susfs: cleanup waiting for fscrypt"
-					" key (retry %d/5)\n", retries);
-				schedule_delayed_work(&susfs_cleanup_dwork,
-						     msecs_to_jiffies(10000));
-			} else {
-				pr_info("susfs: cleanup gave up after 5"
-					" retries\n");
-			}
-			return;
-		}
-		path_put(&_cp);
-	}
-
-	susfs_cleanup_stale_modules();
-
-	/* Ensure modules/ and modules_update/ exist before move.
-	 * mkdir -p from call_usermodehelper at ~40s may still fail
-	 * (fscrypt key not available for userspace), but if so the
-	 * next boot's cleanup will create them when key IS ready. */
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p", "/data/adb/modules",
-			   "/data/adb/modules_update", NULL},
-		NULL, UMH_WAIT_PROC);
-
-	susfs_apply_module_updates();
-}
-
 static void susfs_restore_boot(void)
 {
 	int i;
 
-	/* Schedule cleanup 35s after boot — #613 log confirms
-	 * f2fs_find_entry works at 35s (fscrypt kernel key available). */
-	schedule_delayed_work(&susfs_cleanup_dwork,
-			      msecs_to_jiffies(35000));
 	{
+		static const char * const paths[] = {
+			"/system/bin/su",
+			"/odm/bin/su",
+			"/data/adb/ksu/su",
+			"/system/addon.d",
+			"/system/build.prop",
+			"/data/adb/modules",
+			"/data/adb/ksu-pdeath",
+			"/data/adb/ksu/.allowlist",
+			"/data/adb/ksu/.feature_config",
+			NULL,
+		};
+		for (i = 0; paths[i]; i++)
+			susfs_add_sus_path_kernel(paths[i]);
+	}
+	{
+		static const char * const maps[] = { "/data/adb/", NULL };
+		for (i = 0; maps[i]; i++) susfs_mark_inode_sus_map(maps[i]);
+	}
+	{
+		static const char * const mounts[] = { "/vendor", "/odm", NULL };
+		for (i = 0; mounts[i]; i++) susfs_add_sus_mount_kernel(mounts[i]);
+	}
+
+	susfs_set_uname_kernel("4.19.304", "Default/4.19");
+
+#ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
+	susfs_set_log(false);
+#endif
+#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
+	WRITE_ONCE(susfs_hide_sus_mnts_for_all_procs, true);
+#endif
+#ifdef CONFIG_KSU_SUSFS_ENABLE_AVC_LOG_SPOOFING
+	WRITE_ONCE(susfs_is_avc_log_spoofing_enabled, true);
+#endif
+
+	susfs_restore_properties();
+	susfs_apply_module_updates();
+
+	susfs_boot_restored = true;
+	pr_info("susfs: boot restore complete\n");
+}
 		static const char * const paths[] = {
 			"/system/bin/su",
 			"/odm/bin/su",
@@ -384,10 +294,7 @@ def main():
         '#include <linux/susfs.h>\n'
         '#include <uapi/linux/fs.h>\n'
         '#include <linux/slab.h>\n'
-        '#include <linux/workqueue.h>\n'
-        'extern unsigned long kallsyms_lookup_name(const char *name);\n'
         'extern void susfs_restore_properties(void);\n'
-        'static void susfs_cleanup_stale_modules(void);\n'
         'static void susfs_restore_boot(void);\n'
         'static int susfs_mark_inode_sus_map(const char *path);\n'
         'extern void susfs_apply_module_updates(void);\n'
@@ -420,25 +327,7 @@ def main():
     else:
         print("  WARNING: stop_input_hook(); not found")
 
-    # 3. Add susfs_cleanup_stale_modules() + susfs_apply_module_updates()
-    #    at the end of on_boot_completed() — this runs in ksud process
-    #    context when fscrypt DE key is confirmed loaded.
-    for i, line in enumerate(lines):
-        if line.strip().startswith('ksu_avc_spoof_late_init();'):
-            insert = i + 1
-            call_block = [
-                '#ifdef CONFIG_KSU_SUSFS',
-                '\tsusfs_cleanup_stale_modules();',
-                '\tsusfs_apply_module_updates();',
-                '#endif']
-            for extra_line in reversed(call_block):
-                lines.insert(insert, extra_line)
-            print("  Added cleanup + move after on_boot_completed()")
-            break
-    else:
-        print("  WARNING: ksu_avc_spoof_late_init(); not found in on_boot_completed()")
-
-    # 4. Append SUSFS code block at end of file
+    # 3. Append SUSFS code block at end of file
     lines.append('')
     for line in SUSFS_BLOCK.split('\n'):
         lines.append(line)
