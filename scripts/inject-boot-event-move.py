@@ -21,13 +21,19 @@ SUSFS_BLOCK = r"""
 static bool susfs_boot_restored __read_mostly = false;
 
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
- * Moves any pending modules from staging to active.
- * susfs_move_one will create /data/adb/modules/ if needed. */
+ * Ensures modules/ exists, then moves any pending modules. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
 	const struct cred *old;
 
 	printk(KERN_INFO "susfs: delayed cleanup\n");
+
+	/* mkdir via userspace helper (runs as init context, safe at 35s) */
+	call_usermodehelper("/system/bin/mkdir",
+		(char *[]){"mkdir", "-p",
+			   "/data/adb/modules",
+			   "/data/adb/modules_update", NULL},
+		NULL, UMH_WAIT_PROC);
 
 	if (ksu_cred) {
 		old = override_creds(ksu_cred);
@@ -158,7 +164,7 @@ static void susfs_move_one(const char *name)
 {
 	char old_path[256], new_path[256], prop_path[256];
 	struct path old_p = {}, new_p = {}, modules_dir = {};
-	struct dentry *new_dentry, *target_parent;
+	struct dentry *new_dentry;
 	int err, namlen = strlen(name);
 
 	printk(KERN_INFO "susfs: move_one '%s' begin\n", name);
@@ -182,36 +188,11 @@ static void susfs_move_one(const char *name)
 		return;
 	}
 
-	/* Ensure /data/adb/modules/ exists (create if needed) */
 	err = kern_path("/data/adb/modules", 0, &modules_dir);
 	if (err) {
-		printk(KERN_INFO "susfs: move_one '%s' creating modules/ dir\n", name);
-		err = kern_path("/data/adb", 0, &new_p);
-		if (err) {
-			printk(KERN_INFO "susfs: move_one '%s' /data/adb/ err=%d\n", name, err);
-			path_put(&old_p);
-			return;
-		}
-		target_parent = lookup_one_len("modules", new_p.dentry, 7);
-		if (IS_ERR(target_parent)) {
-			printk(KERN_INFO "susfs: move_one '%s' lookup modules err=%ld\n", name, PTR_ERR(target_parent));
-			path_put(&new_p);
-			path_put(&old_p);
-			return;
-		}
-		if (!d_really_is_positive(target_parent)) {
-			err = vfs_mkdir(d_inode(new_p.dentry), target_parent, 0755);
-			printk(KERN_INFO "susfs: move_one '%s' vfs_mkdir modules err=%d\n", name, err);
-		}
-		dput(target_parent);
-		path_put(&new_p);
-		/* Retry kern_path after mkdir */
-		err = kern_path("/data/adb/modules", 0, &modules_dir);
-		if (err) {
-			printk(KERN_INFO "susfs: move_one '%s' modules/ still err=%d\n", name, err);
-			path_put(&old_p);
-			return;
-		}
+		printk(KERN_INFO "susfs: move_one '%s' modules/ err=%d, deferring\n", name, err);
+		path_put(&old_p);
+		return;
 	}
 
 	new_dentry = lookup_one_len(name, modules_dir.dentry, namlen);
