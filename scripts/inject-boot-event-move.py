@@ -74,7 +74,7 @@ static void susfs_restore_boot(void)
 	}
 
 	susfs_boot_restored = true;
-	pr_info("susfs: boot restore complete\n");
+	printk(KERN_INFO "susfs: boot restore complete\n");
 }
 
 int susfs_is_boot_restored(void)
@@ -122,7 +122,7 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 		return 0;
 	if (c->count >= c->capacity)
 		return 0;
-	pr_info("susfs: collect found '%s' (d_type=%u)\n", name, d_type);
+	printk(KERN_INFO "susfs: collect found '%s' (d_type=%u)\n", name, d_type);
 	memcpy(c->names[c->count], name, min((size_t)namlen, sizeof(c->names[0]) - 1));
 	c->names[c->count][min((size_t)namlen, sizeof(c->names[0]) - 1)] = '\0';
 	c->count++;
@@ -137,54 +137,54 @@ static void susfs_move_one(const char *name)
 	struct dentry *new_dentry;
 	int err, namlen = strlen(name);
 
-	pr_info("susfs: move_one '%s' begin\n", name);
+	printk(KERN_INFO "susfs: move_one '%s' begin\n", name);
 
 	scnprintf(old_path, sizeof(old_path), "/data/adb/modules_update/%s", name);
 	scnprintf(new_path, sizeof(new_path), "/data/adb/modules/%s", name);
 
 	err = kern_path(old_path, 0, &old_p);
 	if (err) {
-		pr_info("susfs: move_one '%s' source not found err=%d\n", name, err);
+		printk(KERN_INFO "susfs: move_one '%s' source not found err=%d\n", name, err);
 		return;
 	}
-	pr_info("susfs: move_one '%s' source found\n", name);
+	printk(KERN_INFO "susfs: move_one '%s' source found\n", name);
 
 	err = kern_path("/data/adb/modules", 0, &modules_dir);
 	if (err) {
-		pr_info("susfs: move_one '%s' modules/ err=%d, deferring\n", name, err);
+		printk(KERN_INFO "susfs: move_one '%s' modules/ err=%d, deferring\n", name, err);
 		path_put(&old_p);
 		return;
 	}
 
 	new_dentry = lookup_one_len(name, modules_dir.dentry, namlen);
 	if (IS_ERR(new_dentry)) {
-		pr_info("susfs: move_one '%s' lookup target dentry failed\n", name);
+		printk(KERN_INFO "susfs: move_one '%s' lookup target dentry failed\n", name);
 		path_put(&modules_dir);
 		path_put(&old_p);
 		return;
 	}
-	pr_info("susfs: move_one '%s' found target dentry\n", name);
+	printk(KERN_INFO "susfs: move_one '%s' found target dentry\n", name);
 
 	err = kern_path(new_path, 0, &new_p);
 	if (!err) {
-		pr_info("susfs: move_one '%s' target exists, RENAME_EXCHANGE\n", name);
+		printk(KERN_INFO "susfs: move_one '%s' target exists, RENAME_EXCHANGE\n", name);
 		err = vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
 			   new_p.dentry->d_parent->d_inode, new_p.dentry,
 			   NULL, RENAME_EXCHANGE);
-		pr_info("susfs: move_one '%s' exchange done err=%d\n", name, err);
+		printk(KERN_INFO "susfs: move_one '%s' exchange done err=%d\n", name, err);
 		path_put(&new_p);
 	} else {
-		pr_info("susfs: move_one '%s' target not exists err=%d, simple rename\n", name, err);
+		printk(KERN_INFO "susfs: move_one '%s' target not exists err=%d, simple rename\n", name, err);
 		err = vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
 			   modules_dir.dentry->d_inode, new_dentry,
 			   NULL, 0);
-		pr_info("susfs: move_one '%s' rename done err=%d\n", name, err);
+		printk(KERN_INFO "susfs: move_one '%s' rename done err=%d\n", name, err);
 	}
 
 	dput(new_dentry);
 	path_put(&modules_dir);
 	path_put(&old_p);
-	pr_info("susfs: move_one '%s' finish\n", name);
+	printk(KERN_INFO "susfs: move_one '%s' finish\n", name);
 }
 
 void susfs_apply_module_updates(void)
@@ -201,34 +201,34 @@ void susfs_apply_module_updates(void)
 
 	dir = filp_open("/data/adb/modules_update/", O_RDONLY | O_DIRECTORY, 0);
 	if (IS_ERR(dir)) {
-		pr_info("susfs: stage0 no staging dir\n");
+		printk(KERN_INFO "susfs: stage0 no staging dir\n");
 		return;
 	}
-	pr_info("susfs: stage1 collecting module IDs\n");
+	printk(KERN_INFO "susfs: stage1 collecting module IDs\n");
 
 	names = kmalloc(SUSFS_MAX_STAGING * SUSFS_NAME_MAX, GFP_ATOMIC);
 	if (!names) {
-		pr_info("susfs: stage1 kmalloc OOM\n");
+		printk(KERN_INFO "susfs: stage1 kmalloc OOM\n");
 		filp_close(dir, NULL);
 		return;
 	}
 	cctx.names = names;
-	pr_info("susfs: stage2 iterate_dir\n");
+	printk(KERN_INFO "susfs: stage2 iterate_dir\n");
 
 	iterate_dir(dir, &cctx.ctx);
 	filp_close(dir, NULL);
 
 	if (cctx.count == 0) {
-		pr_info("susfs: stage2 nothing to move\n");
+		printk(KERN_INFO "susfs: stage2 nothing to move\n");
 		kfree(names);
 		return;
 	}
 
-	pr_info("susfs: stage3 moving %d module(s)\n", cctx.count);
+	printk(KERN_INFO "susfs: stage3 moving %d module(s)\n", cctx.count);
 	for (i = 0; i < cctx.count; i++)
 		susfs_move_one(cctx.names[i]);
 	kfree(names);
-	pr_info("susfs: stage4 done\n");
+	printk(KERN_INFO "susfs: stage4 done\n");
 }
 #endif /* CONFIG_KSU_SUSFS */
 """
