@@ -21,25 +21,20 @@ SUSFS_BLOCK = r"""
 static bool susfs_boot_restored __read_mostly = false;
 
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
- * Ensures modules/ exists, then moves any pending modules. */
+ * Ensures modules/ exists, then moves any pending modules.
+ * Must NOT use override_creds(ksu_cred) — the ksu domain makes
+ * kern_path("/data/adb/modules") return -ENOENT on this kernel. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
-	const struct cred *old;
-
 	printk(KERN_INFO "susfs: delayed cleanup\n");
 
-	/* mkdir via userspace helper (runs as init context, safe at 35s) */
 	call_usermodehelper("/system/bin/mkdir",
 		(char *[]){"mkdir", "-p",
 			   "/data/adb/modules",
 			   "/data/adb/modules_update", NULL},
 		NULL, UMH_WAIT_PROC);
 
-	if (ksu_cred) {
-		old = override_creds(ksu_cred);
-		susfs_apply_module_updates();
-		revert_creds(old);
-	}
+	susfs_apply_module_updates();
 }
 
 static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
@@ -61,7 +56,6 @@ static void susfs_restore_boot(void)
 			"/data/adb/ksu/su",
 			"/system/addon.d",
 			"/system/build.prop",
-			"/data/adb/modules",
 			"/data/adb/ksu-pdeath",
 			"/data/adb/ksu/.allowlist",
 			"/data/adb/ksu/.feature_config",
@@ -94,14 +88,10 @@ static void susfs_restore_boot(void)
 	susfs_restore_properties();
 
 	/* Move any modules left in staging to active.
-	 * Override creds to KSU domain (permissive) so VFS operations
-	 * succeed from PID 1 context (init SELinux context may lack
-	 * access to adb_data_file on some kernels). */
-	if (ksu_cred) {
-		const struct cred *old = override_creds(ksu_cred);
-		susfs_apply_module_updates();
-		revert_creds(old);
-	}
+	 * Must run as init (no override_creds) — the ksu domain
+	 * (u:r:ksu:s0) triggers SUSFS path hiding that makes
+	 * kern_path("/data/adb/modules") return -ENOENT. */
+	susfs_apply_module_updates();
 
 	susfs_boot_restored = true;
 	printk(KERN_INFO "susfs: boot restore complete\n");
