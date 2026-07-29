@@ -25,12 +25,15 @@ static bool susfs_boot_restored __read_mostly = false;
  * /data/adb/.susfs_fixed so subsequent boots skip cleanup. */
 static void susfs_cleanup_stale_modules(void)
 {
+	struct path _flag_p;
+
 	pr_info("susfs: checking stale modules\n");
 
-	/* Skip if already fixed */
-	if (call_usermodehelper("/system/bin/test",
-		(char *[]){"test", "-f", "/data/adb/.susfs_fixed", NULL},
-		NULL, UMH_WAIT_PROC) == 0) {
+	/* Skip if already fixed — use kern_path (reliable from PID 1).
+	 * Do NOT use call_usermodehelper(test -f) — kernel context
+	 * always returns 0 even for non-existent paths. */
+	if (kern_path("/data/adb/.susfs_fixed", 0, &_flag_p) == 0) {
+		path_put(&_flag_p);
 		pr_info("susfs: stale modules already fixed\n");
 		return;
 	}
