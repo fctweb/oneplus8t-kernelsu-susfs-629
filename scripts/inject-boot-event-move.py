@@ -76,20 +76,28 @@ static int susfs_ensure_dir(const char *path)
 	int err;
 
 	err = kern_path(path, LOOKUP_PARENT, &p);
-	if (err) return err;
+	if (err) {
+		printk(KERN_INFO "susfs: ensure_dir '%s' parent lookup err=%d\n", path, err);
+		return err;
+	}
 
 	d = lookup_one_len(strrchr(path, '/') + 1, p.dentry,
 			   strlen(strrchr(path, '/') + 1));
-	if (IS_ERR(d)) { path_put(&p); return PTR_ERR(d); }
+	if (IS_ERR(d)) {
+		printk(KERN_INFO "susfs: ensure_dir '%s' lookup err=%ld\n", path, PTR_ERR(d));
+		path_put(&p);
+		return PTR_ERR(d);
+	}
 
 	if (d_really_is_positive(d)) {
-		/* Already exists */
+		printk(KERN_INFO "susfs: ensure_dir '%s' already exists\n", path);
 		dput(d);
 		path_put(&p);
 		return 0;
 	}
 
 	err = vfs_mkdir(d_inode(p.dentry), d, 0755);
+	printk(KERN_INFO "susfs: ensure_dir '%s' mkdir err=%d\n", path, err);
 	dput(d);
 	path_put(&p);
 	return err;
