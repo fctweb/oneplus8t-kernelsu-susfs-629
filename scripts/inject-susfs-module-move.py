@@ -64,11 +64,8 @@ def main():
 #ifdef CONFIG_KSU_SUSFS
 \t/* Module install just completed — move staging modules to active.
 \t * Override creds to KSU root domain (u:r:ksu:s0, permissive) to
-\t * bypass SELinux checks, since the calling process (e.g. prebuilt
-\t * ksud) may run as u:r:shell:s0 which lacks VFS access to
-\t * /data/adb/modules/.  Also guard against process exit where
-\t * current->fs has been cleaned up by exit_fs(). */
-\tif (current->fs) {
+\t * bypass SELinux checks. Only skip if ksu_cred isn't ready yet. */
+\tif (ksu_cred) {
 \t\tconst struct cred *old = override_creds(ksu_cred);
 \t\tsusfs_apply_module_updates();
 \t\trevert_creds(old);

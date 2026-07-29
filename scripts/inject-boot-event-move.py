@@ -71,16 +71,23 @@ static void susfs_cleanup_stale_modules(void)
  * then moves any pending modules from staging to active. */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
+	const struct cred *old;
+
 	printk(KERN_INFO "susfs: delayed cleanup\n");
 	susfs_cleanup_stale_modules();
 
-	call_usermodehelper("/system/bin/mkdir",
-		(char *[]){"mkdir", "-p",
-			   "/data/adb/modules",
-			   "/data/adb/modules_update", NULL},
-		NULL, UMH_WAIT_PROC);
-
-	susfs_apply_module_updates();
+	/* Use ksu_cred for mkdir VFS access (workqueue runs in init context,
+	 * which SELinux may deny from writing to adb_data_file). */
+	if (ksu_cred) {
+		old = override_creds(ksu_cred);
+		call_usermodehelper("/system/bin/mkdir",
+			(char *[]){"mkdir", "-p",
+				   "/data/adb/modules",
+				   "/data/adb/modules_update", NULL},
+			NULL, UMH_WAIT_PROC);
+		susfs_apply_module_updates();
+		revert_creds(old);
+	}
 }
 
 static DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
@@ -138,7 +145,7 @@ static void susfs_restore_boot(void)
 	 * Override creds to KSU domain (permissive) so VFS operations
 	 * succeed from PID 1 context (init SELinux context may lack
 	 * access to adb_data_file on some kernels). */
-	{
+	if (ksu_cred) {
 		const struct cred *old = override_creds(ksu_cred);
 		susfs_apply_module_updates();
 		revert_creds(old);
