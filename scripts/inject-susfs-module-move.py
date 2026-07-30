@@ -18,17 +18,17 @@ def main():
     sc_path = os.path.join(root, "drivers/kernelsu/supercall/supercall.c")
     kh_path = os.path.join(root, "drivers/kernelsu/runtime/ksud_boot.h")
 
-    # 0. Add declaration to ksud_boot.h first so supercall.c can find it
+    # 0. Add declarations to ksud_boot.h first so supercall.c can find them
     if os.path.exists(kh_path):
         with open(kh_path) as f:
             kh_content = f.read()
         if 'susfs_apply_module_updates' not in kh_content:
             kh_content += '\nvoid susfs_apply_module_updates(void);\n'
-            with open(kh_path, 'w') as f:
-                f.write(kh_content)
-            print(f"  Added declaration to {kh_path}")
-        else:
-            print(f"  ksud_boot.h already has declaration")
+        if 'susfs_schedule_module_move' not in kh_content:
+            kh_content += 'void susfs_schedule_module_move(void);\n'
+        with open(kh_path, 'w') as f:
+            f.write(kh_content)
+        print(f"  Added declarations to {kh_path}")
     else:
         print(f"  WARNING: {kh_path} not found")
 
@@ -63,14 +63,18 @@ def main():
 \tpr_info("ksu fd released\\n");
 #ifdef CONFIG_KSU_SUSFS
 \t/* Module install just completed — move staging modules to active.
-\t * Override creds to KSU root domain (u:r:ksu:s0, permissive) to
-\t * bypass SELinux checks. Guard current->fs: on some ksud code
-\t * paths the fd is closed from a context without fs (kthread,
-\t * unshare). Without this guard the VFS operations crash. */
-\tif (current->fs && ksu_cred) {
-\t\tconst struct cred *old = override_creds(ksu_cred);
-\t\tsusfs_apply_module_updates();
-\t\trevert_creds(old);
+\t * Dual path: if current->fs is valid (normal close/exit), call
+\t * susfs_apply_module_updates() directly.  If it is NULL (ksud
+\t * unshare or kthread path), defer to the cleanup workqueue
+\t * which runs in kworker context with inherited init fs.
+\t * No override_creds needed — the KSU domain triggers SUSFS
+\t * path hiding that makes kern_path fail on this kernel. */
+\tif (ksu_cred) {
+\t\tif (current->fs) {
+\t\t\tsusfs_apply_module_updates();
+\t\t} else {
+\t\t\tsusfs_schedule_module_move();
+\t\t}
 \t}
 #endif
 \treturn 0;
