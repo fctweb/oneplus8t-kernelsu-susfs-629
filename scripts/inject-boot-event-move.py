@@ -212,6 +212,24 @@ static void susfs_move_one(const char *name)
 
 	err = kern_path(new_path, 0, &new_p);
 	if (!err) {
+		/* Check if target has actual module files (not just ksud
+		 * pre-created module.prop/update). If so, skip exchange —
+		 * module is already active. The source after a previous
+		 * exchange has only module.prop + update (stale remnant). */
+		struct path _check;
+		scnprintf(upd_path, sizeof(upd_path), "%s/bin", old_path);
+		if (kern_path(upd_path, 0, &_check) != 0) {
+			scnprintf(upd_path, sizeof(upd_path), "%s/lib", old_path);
+			if (kern_path(upd_path, 0, &_check) != 0) {
+				printk(KERN_INFO "susfs: move_one '%s' source stale, skipping\n", name);
+				dput(new_dentry);
+				path_put(&modules_dir);
+				path_put(&new_p);
+				path_put(&old_p);
+				return;
+			}
+		}
+		path_put(&_check);
 		printk(KERN_INFO "susfs: move_one '%s' target exists, RENAME_EXCHANGE\n", name);
 		err = vfs_rename(old_p.dentry->d_parent->d_inode, old_p.dentry,
 			   new_p.dentry->d_parent->d_inode, new_p.dentry,
