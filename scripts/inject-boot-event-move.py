@@ -171,9 +171,10 @@ static int susfs_collect_actor(struct dir_context *ctx, const char *name,
 /* ── Move module from staging to active ──────────────────────── */
 static void susfs_move_one(const char *name)
 {
-	char old_path[256], new_path[256], prop_path[256];
+	char old_path[256], new_path[256], upd_path[256];
 	struct path old_p = {}, new_p = {}, modules_dir = {};
-	struct dentry *new_dentry;
+	struct dentry *new_dentry, *upd_dentry;
+	struct inode *dir_inode;
 	int err, namlen = strlen(name);
 
 	printk(KERN_INFO "susfs: move_one '%s' begin\n", name);
@@ -189,8 +190,8 @@ static void susfs_move_one(const char *name)
 	printk(KERN_INFO "susfs: move_one '%s' source found\n", name);
 
 	/* Check if module already active — skip if module.prop exists */
-	scnprintf(prop_path, sizeof(prop_path), "/data/adb/modules/%s/module.prop", name);
-	if (kern_path(prop_path, 0, &new_p) == 0) {
+	scnprintf(upd_path, sizeof(upd_path), "/data/adb/modules/%s/module.prop", name);
+	if (kern_path(upd_path, 0, &new_p) == 0) {
 		printk(KERN_INFO "susfs: move_one '%s' already active, skipping\n", name);
 		path_put(&new_p);
 		path_put(&old_p);
@@ -227,6 +228,24 @@ static void susfs_move_one(const char *name)
 			   modules_dir.dentry->d_inode, new_dentry,
 			   NULL, 0);
 		printk(KERN_INFO "susfs: move_one '%s' rename done err=%d\n", name, err);
+	}
+
+	/* After successful rename, remove the ksud "update" marker file.
+	 * ksud creates this file in the staging directory before closing
+	 * the KSU fd. If the move happens asynchronously (deferred
+	 * workqueue), ksud may have already exited and left the marker.
+	 * The marker disables the App's module toggle (Module.kt:1209). */
+	if (err == 0) {
+		scnprintf(upd_path, sizeof(upd_path), "%s/update", new_path);
+		if (kern_path(upd_path, 0, &new_p) == 0) {
+			upd_dentry = new_p.dentry;
+			dir_inode = d_inode(upd_dentry->d_parent);
+			inode_lock_nested(dir_inode, I_MUTEX_PARENT);
+			vfs_unlink(dir_inode, upd_dentry, NULL);
+			inode_unlock(dir_inode);
+			printk(KERN_INFO "susfs: move_one '%s' removed update marker\n", name);
+			path_put(&new_p);
+		}
 	}
 
 	dput(new_dentry);
