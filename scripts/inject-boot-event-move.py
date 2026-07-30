@@ -189,11 +189,23 @@ static void susfs_move_one(const char *name)
 	}
 	printk(KERN_INFO "susfs: move_one '%s' source found\n", name);
 
-	/* Check if module already active — skip if module.prop exists */
+	/* Check if module already active — skip if module.prop exists.
+	 * But still clean up stale ksud "update" marker file which disables
+	 * the App's toggle (Module.kt:1209). */
 	scnprintf(upd_path, sizeof(upd_path), "/data/adb/modules/%s/module.prop", name);
 	if (kern_path(upd_path, 0, &new_p) == 0) {
-		printk(KERN_INFO "susfs: move_one '%s' already active, skipping\n", name);
 		path_put(&new_p);
+		scnprintf(upd_path, sizeof(upd_path), "/data/adb/modules/%s/update", name);
+		if (kern_path(upd_path, 0, &new_p) == 0) {
+			upd_dentry = new_p.dentry;
+			dir_inode = d_inode(upd_dentry->d_parent);
+			inode_lock_nested(dir_inode, I_MUTEX_PARENT);
+			vfs_unlink(dir_inode, upd_dentry, NULL);
+			inode_unlock(dir_inode);
+			printk(KERN_INFO "susfs: move_one '%s' cleaned stale update\n", name);
+			path_put(&new_p);
+		}
+		printk(KERN_INFO "susfs: move_one '%s' already active, skipping\n", name);
 		path_put(&old_p);
 		return;
 	}
