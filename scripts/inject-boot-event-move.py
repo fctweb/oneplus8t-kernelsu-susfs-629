@@ -126,9 +126,13 @@ static void susfs_restore_boot(void)
 	 * kernel helper (u:r:kernel:s0) which lacks access to
 	 * adb_data_file without the ksu domain's permissive flag. */
 	susfs_boot_restored = true;
-	call_usermodehelper("/data/adb/ksud",
-		(char *[]){"ksud", "post-fs-data", NULL},
-		NULL, UMH_WAIT_PROC);
+	{
+		int _ret = call_usermodehelper("/data/adb/ksud",
+			(char *[]){"ksud", "post-fs-data", NULL},
+			NULL, UMH_WAIT_PROC);
+		if (_ret)
+			printk(KERN_INFO "susfs: ksud post-fs-data err=%d\n", _ret);
+	}
 	printk(KERN_INFO "susfs: boot restore complete\n");
 }
 
