@@ -46,6 +46,10 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 		susfs_apply_module_updates();
 		revert_creds(old);
 	}
+
+	/* Trigger post-fs-data.d scripts (monitor startup, etc.).
+	 * call_usermodehelper is reliable at 35s (khelper wq is ready). */
+	susfs_trigger_post_fs_data();
 }
 
 DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
@@ -56,6 +60,17 @@ DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
 void susfs_schedule_module_move(void)
 {
 	mod_delayed_work(system_wq, &susfs_cleanup_dwork, 1);
+}
+
+/* Called from susfs_cleanup_dwork_fn to trigger post-fs-data.d scripts.
+ * Moved here from susfs_restore_boot() because call_usermodehelper
+ * does not work reliably at 4.7s (khelper wq not fully ready). */
+static void susfs_trigger_post_fs_data(void)
+{
+	int ret = call_usermodehelper("/data/adb/ksud",
+		(char *[]){"ksud", "post-fs-data", NULL},
+		NULL, UMH_NO_WAIT);
+	printk(KERN_INFO "susfs: ksud post-fs-data ret=%d\n", ret);
 }
 
 static void susfs_restore_boot(void)
@@ -117,22 +132,7 @@ static void susfs_restore_boot(void)
 	 * kern_path("/data/adb/modules") return -ENOENT. */
 	susfs_apply_module_updates();
 
-	/* Trigger post-fs-data.d/ scripts for just-moved modules.
-	 * KSU's init rc injection (ksud_integration.c:38) doesn't
-	 * execute reliably on this kernel, so we call it directly.
-	 * Guard at function entry prevents re-entry loop via
-	 * ksud → report_post_fs_data() → on_post_fs_data().
-	 * Use override_creds(ksu_cred) — spawned process runs as
-	 * kernel helper (u:r:kernel:s0) which lacks access to
-	 * adb_data_file without the ksu domain's permissive flag. */
 	susfs_boot_restored = true;
-	{
-		int _ret = call_usermodehelper("/data/adb/ksud",
-			(char *[]){"ksud", "post-fs-data", NULL},
-			NULL, UMH_WAIT_PROC);
-		if (_ret)
-			printk(KERN_INFO "susfs: ksud post-fs-data err=%d\n", _ret);
-	}
 	printk(KERN_INFO "susfs: boot restore complete\n");
 }
 
