@@ -40,14 +40,14 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 	susfs_apply_module_updates();
 }
 
+DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
+
 /* Called from anon_ksu_release() when current->fs is NULL.
  * Reschedules cleanup so it runs in kworker context (has init fs). */
 void susfs_schedule_module_move(void)
 {
 	mod_delayed_work(system_wq, &susfs_cleanup_dwork, 1);
 }
-
-DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
 
 static void susfs_restore_boot(void)
 {
