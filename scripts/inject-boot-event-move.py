@@ -24,9 +24,13 @@ static bool susfs_boot_restored __read_mostly = false;
  * Ensures modules/ exists, then moves any pending modules.
  * Uses rename workaround for f2fs stale inline dentry: mkdir a temp
  * name then mv to "modules" — rename uses a different code path
- * in f2fs that bypasses the stale dentry check. */
+ * in f2fs that bypasses the stale dentry check.
+ * Uses override_creds(ksu_cred) — kworker SELinux context lacks
+ * permission to write to adb_data_file (verified: returns EACCES). */
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
+	const struct cred *old;
+
 	printk(KERN_INFO "susfs: delayed cleanup\n");
 
 	call_usermodehelper("/system/bin/sh",
@@ -37,13 +41,18 @@ static void susfs_cleanup_dwork_fn(struct work_struct *work)
 			   NULL},
 		NULL, UMH_WAIT_PROC);
 
-	susfs_apply_module_updates();
+	if (ksu_cred) {
+		old = override_creds(ksu_cred);
+		susfs_apply_module_updates();
+		revert_creds(old);
+	}
 }
 
 DECLARE_DELAYED_WORK(susfs_cleanup_dwork, susfs_cleanup_dwork_fn);
 
 /* Called from anon_ksu_release() when current->fs is NULL.
- * Reschedules cleanup so it runs in kworker context (has init fs). */
+ * Reschedules cleanup so it runs in kworker context.
+ * The cleanup function uses override_creds(ksu_cred) for VFS access. */
 void susfs_schedule_module_move(void)
 {
 	mod_delayed_work(system_wq, &susfs_cleanup_dwork, 1);
