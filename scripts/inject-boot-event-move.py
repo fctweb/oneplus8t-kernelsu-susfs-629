@@ -27,6 +27,7 @@ static bool susfs_boot_restored __read_mostly = false;
  * in f2fs that bypasses the stale dentry check.
  * Uses override_creds(ksu_cred) — kworker SELinux context lacks
  * permission to write to adb_data_file (verified: returns EACCES). */
+static void susfs_trigger_post_fs_data(void);
 static void susfs_cleanup_dwork_fn(struct work_struct *work)
 {
 	const struct cred *old;
