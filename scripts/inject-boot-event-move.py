@@ -121,11 +121,18 @@ static void susfs_restore_boot(void)
 	 * KSU's init rc injection (ksud_integration.c:38) doesn't
 	 * execute reliably on this kernel, so we call it directly.
 	 * Guard at function entry prevents re-entry loop via
-	 * ksud → report_post_fs_data() → on_post_fs_data(). */
+	 * ksud → report_post_fs_data() → on_post_fs_data().
+	 * Use override_creds(ksu_cred) — spawned process runs as
+	 * kernel helper (u:r:kernel:s0) which lacks access to
+	 * adb_data_file without the ksu domain's permissive flag. */
 	susfs_boot_restored = true;
-	call_usermodehelper("/data/adb/ksud",
-		(char *[]){"ksud", "post-fs-data", NULL},
-		NULL, UMH_NO_WAIT);
+	if (ksu_cred) {
+		const struct cred *old = override_creds(ksu_cred);
+		call_usermodehelper("/data/adb/ksud",
+			(char *[]){"ksud", "post-fs-data", NULL},
+			NULL, UMH_NO_WAIT);
+		revert_creds(old);
+	}
 	printk(KERN_INFO "susfs: boot restore complete\n");
 }
 
