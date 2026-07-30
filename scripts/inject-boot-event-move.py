@@ -62,6 +62,11 @@ static void susfs_restore_boot(void)
 {
 	int i;
 
+	/* Re-entry guard: report_post_fs_data() from ksud post-fs-data
+	 * would trigger another on_post_fs_data() → infinite loop. */
+	if (susfs_boot_restored)
+		return;
+
 	/* Schedule stale-entry cleanup at 35s (when fscrypt key loaded).
 	 * Must be done async — f2fs_find_entry needs the key to resolve
 	 * encrypted filenames in inline dentries. */
@@ -112,16 +117,15 @@ static void susfs_restore_boot(void)
 	 * kern_path("/data/adb/modules") return -ENOENT. */
 	susfs_apply_module_updates();
 
-	/* Run post-fs-data.d scripts for just-moved modules.
-	 * Can't use ksud post-fs-data — it calls report_post_fs_data
-	 * which triggers another on_post_fs_data() → infinite loop. */
-	call_usermodehelper("/system/bin/sh",
-		(char *[]){"sh",
-			   "/data/adb/post-fs-data.d/rezygisk.sh",
-			   NULL},
-		NULL, UMH_NO_WAIT);
-
+	/* Trigger post-fs-data.d/ scripts for just-moved modules.
+	 * KSU's init rc injection (ksud_integration.c:38) doesn't
+	 * execute reliably on this kernel, so we call it directly.
+	 * Guard at function entry prevents re-entry loop via
+	 * ksud → report_post_fs_data() → on_post_fs_data(). */
 	susfs_boot_restored = true;
+	call_usermodehelper("/data/adb/ksud",
+		(char *[]){"ksud", "post-fs-data", NULL},
+		NULL, UMH_NO_WAIT);
 	printk(KERN_INFO "susfs: boot restore complete\n");
 }
 
