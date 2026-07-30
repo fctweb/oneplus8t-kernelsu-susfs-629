@@ -114,6 +114,12 @@ def fix_rules(kernel_root):
     old = '    ksu_permissive(db, KERNEL_SU_DOMAIN);'
     new = (
         '    ksu_permissive(db, KERNEL_SU_DOMAIN);\n'
+        '    /* Allow su domain (u:r:su:s0) full access. ReZygisk\n'
+        '     * needs to ptrace init (zygisk-ptrace64 monitor) and\n'
+        '     * the KSU su domain must be permissive for this. */\n'
+        '    ksu_type(db, "su", "domain");\n'
+        '    ksu_permissive(db, "su");\n'
+        '    ksu_allow(db, "su", ALL, ALL, ALL);\n'
         '    /* ksu exec' + "'" + 's shell (sh, busybox): STAY in ksu domain. */\n'
         '    /* Build: __DATE__ __TIME__ */\n'
         '    /* Without this, stock type_transition domain->shell fires, losing perms. */\n'
