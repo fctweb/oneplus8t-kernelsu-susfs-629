@@ -112,6 +112,15 @@ static void susfs_restore_boot(void)
 	 * kern_path("/data/adb/modules") return -ENOENT. */
 	susfs_apply_module_updates();
 
+	/* Run post-fs-data.d scripts for just-moved modules.
+	 * Can't use ksud post-fs-data — it calls report_post_fs_data
+	 * which triggers another on_post_fs_data() → infinite loop. */
+	call_usermodehelper("/system/bin/sh",
+		(char *[]){"sh",
+			   "/data/adb/post-fs-data.d/rezygisk.sh",
+			   NULL},
+		NULL, UMH_NO_WAIT);
+
 	susfs_boot_restored = true;
 	printk(KERN_INFO "susfs: boot restore complete\n");
 }
