@@ -181,6 +181,28 @@ avc: denied { execmod } for comm="android.bankabc"
 
 ---
 
+### E010：SUSFS `susfs_spoof_uname` 的 `spin_is_locked` 检查导致 uname 伪装失效
+
+**现象**：boot restore 的 `susfs_set_uname_kernel("4.19.304", "#1 SMP PREEMPT...")` 成功写入（dmesg 确认），ksud `set-uname` 也返回 0，但 `uname -v` 仍显示真实内核版本（`#2 SMP PREEMPT Sat Aug 1...`），uname 伪装完全不生效。
+
+**根因**：`susfs_spoof_uname()` 的实现：
+```c
+if (unlikely(my_uname.release[0] == '\0' || spin_is_locked(&susfs_uname_spin_lock)))
+    return;
+```
+`newuname` 系统调用在**进程上下文**执行，此时 `susfs_uname_spin_lock` 通常**未被持有**。`spin_is_locked()` 在未持有的锁上检查**不可靠**，在 SMP + 优化编译下可能**误报为 locked**，导致 `susfs_spoof_uname` 提前 return，uname 伪装静默失效。这是 SUSFS 上游的已知缺陷。
+
+**修复**：移除 `spin_is_locked()` 检查，只保留 `my_uname.release[0] == '\0'`（未设置时跳过）保护。uname 伪装本身不依赖该锁（`susfs_set_uname`/`susfs_set_uname_kernel` 在写时加锁，`susfs_spoof_uname` 只读 my_uname，进程上下文读无需锁保护）。
+
+**教训**：
+- `spin_is_locked()` 只能用于锁**必然被持有**的上下文（如中断处理、锁持有者内），不能在普通进程上下文用它对未持有的锁做状态判断——会误报导致功能失效
+- 只读共享变量的函数（如 uname 伪装读取 my_uname）在进程上下文无需自旋锁保护，只需检查数据是否已初始化（空值守卫）
+- 验证 uname 伪装是否生效：boot restore 设置后立即 `uname -v`，若显示真实值则 hook 未生效
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

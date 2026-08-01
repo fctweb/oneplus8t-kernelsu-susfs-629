@@ -691,7 +691,12 @@ int susfs_set_uname(struct st_susfs_uname* __user user_info) {
 }
 
 void susfs_spoof_uname(struct new_utsname* tmp) {
-	if (unlikely(my_uname.release[0] == '\0' || spin_is_locked(&susfs_uname_spin_lock)))
+	/* NOTE: do NOT check spin_is_locked(&susfs_uname_spin_lock) here.
+	 * newuname runs in process context where the lock is normally NOT
+	 * held; spin_is_locked() on an unheld lock is unreliable and can
+	 * spuriously return true, silently disabling uname spoofing.
+	 * Only guard against the empty (not-yet-set) case. */
+	if (unlikely(my_uname.release[0] == '\0'))
 		return;
 	strncpy(tmp->release, my_uname.release, __NEW_UTS_LEN);
 	strncpy(tmp->version, my_uname.version, __NEW_UTS_LEN);
