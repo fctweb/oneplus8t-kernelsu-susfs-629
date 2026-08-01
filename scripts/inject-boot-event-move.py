@@ -104,6 +104,15 @@ static void susfs_restore_boot(void)
 		for (i = 0; paths[i]; i++)
 			susfs_add_sus_path_kernel(paths[i]);
 	}
+	/* WARNING: DO NOT add open_redirect here (E005 / bank app breakage).
+	 * Redirecting /proc/net/unix, /proc/self/mounts, /proc/version,
+	 * /sys/fs/selinux/enforce to /dev/null with uid_scheme=2
+	 * (UID_NON_SU_PROC) makes UC-WebView based bank apps read empty
+	 * data and fail with "network error". The VFS do_sys_open hook
+	 * stays dormant unless an inode is marked INODE_STATE_OPEN_REDIRECT,
+	 * so leaving this block out is SAFE for normal apps.
+	 * Commit 91ced34 caused this regression; it was reverted to #670
+	 * (6391554) which keeps the clean sus_path list above. */
 	{
 		static const char * const maps[] = { "/data/adb/", NULL };
 		for (i = 0; maps[i]; i++) susfs_mark_inode_sus_map(maps[i]);

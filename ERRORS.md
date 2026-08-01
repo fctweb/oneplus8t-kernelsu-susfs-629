@@ -85,6 +85,20 @@ if (unlikely(uid == 0)) {
 
 ---
 
+### E005：SUSFS open_redirect 重定向 procfs 路径导致银行 App "网络不给力"
+
+**现象**：农业银行 App（`com.android.bankabc`）能进入主界面（native 页面正常），但点击任何功能页（走 UC WebView/H5 容器）都显示"网络不给力，请稍后再试"。网络连通性正常（ping/DNS/HTTPS 全部通过），App 的 TCP 连接均为 ESTABLISHED，日志无 execmod/proc_net 相关 avc denial。
+
+**根因**：commit `91ced34` 在 `susfs_restore_boot()` 添加 open_redirect，把 `/proc/net/unix`、`/proc/self/mounts`、`/proc/version`、`/proc/self/attr/current` 重定向到 `/dev/null`（uid_scheme=2，对所有非 KSU 域进程生效）。银行 App 是 untrusted_app_30（非 KSU 域），UC WebView/H5 初始化读 `/proc/net/unix` 检查 socket、读 `/proc/self/mounts` 判断网络环境，拿到空数据 → 判定"网络异常" → 显示"网络不给力"。主界面 native 不走 H5 网络层所以正常。
+
+**修复**：回滚到 #670（commit `6391554`），`susfs_restore_boot()` 的 sus_path 为干净最小集，不含 open_redirect 调用；VFS 钩子在无 `INODE_STATE_OPEN_REDIRECT` 标记时休眠，对普通 App 无副作用。已加防回归注释。
+
+**教训**：不要对 `/proc/net/unix`、`/proc/self/mounts` 等"App 正常运行也读取"的系统状态文件用 open_redirect 重定向到 /dev/null；open_redirect 只适合隐藏检测特征文件（su 二进制、ksu 目录）。若 App "能进主界面但功能页报错"，优先怀疑 H5/WebView 依赖的系统文件被重定向，而非 SELinux 规则缺失。`dmesg | grep open_redirect` 可核对实际注册规则（设备内核可能与工作区代码不一致）。
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

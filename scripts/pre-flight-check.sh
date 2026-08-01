@@ -82,11 +82,12 @@ check_blocking "FLASH_PROCEDURE.md 存在" "test -f FLASH_PROCEDURE.md"
 check_blocking "ERRORS.md 存在" "test -f ERRORS.md"
 check_blocking "pre-flight-check.sh 存在" "test -f scripts/pre-flight-check.sh"
 check_blocking "错误经验库有内容" 'grep -c "### E00" ERRORS.md 2>/dev/null | grep -q .'
-# Dynamic check: latest E00N entry has all 4 required fields
-check_blocking "最新条目有【现象】字段" "grep -A8 '### $LATEST_E' ERRORS.md | grep -q '现象'"
-check_blocking "最新条目有【根因】字段" "grep -A8 '### $LATEST_E' ERRORS.md | grep -q '根因'"
-check_blocking "最新条目有【教训】字段" "grep -A8 '### $LATEST_E' ERRORS.md | grep -q '教训'"
-check_blocking "最新条目有【检查清单锚点】字段" "grep -A8 '### $LATEST_E' ERRORS.md | grep -q '检查清单锚点'"
+# Dynamic check: latest E00N entry has all 4 required fields.
+# Use -A40 so detailed root-cause entries (multi-line 现象/根因) still pass.
+check_blocking "最新条目有【现象】字段" "grep -A40 '### $LATEST_E' ERRORS.md | grep -q '现象'"
+check_blocking "最新条目有【根因】字段" "grep -A40 '### $LATEST_E' ERRORS.md | grep -q '根因'"
+check_blocking "最新条目有【教训】字段" "grep -A40 '### $LATEST_E' ERRORS.md | grep -q '教训'"
+check_blocking "最新条目有【检查清单锚点】字段" "grep -A40 '### $LATEST_E' ERRORS.md | grep -q '检查清单锚点'"
 
 # === 5b. 提交信息检查（阻断） ===
 echo ""
