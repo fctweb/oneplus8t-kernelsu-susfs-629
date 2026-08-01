@@ -1305,7 +1305,8 @@ index b8ec1dbd1be5..6c48a53a88ea 100644
  			   iter->type, iter->name);
 +#else
 +	{
-+		if (strstr(iter->name, "ksu_") || !strncmp(iter->name, "susfs_", 6) || !strncmp(iter->name, "ksud", 4)) {
++		if (strstr(iter->name, "ksu_") || strstr(iter->name, "susfs") ||
++		    strstr(iter->name, "kernelsu") || !strncmp(iter->name, "ksud", 4)) {
 +			return 0;
 +		}
 +		seq_printf(m, "%px %c %s\n", value,

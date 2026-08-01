@@ -127,6 +127,24 @@ avc: denied { execmod } for comm="android.bankabc"
 
 ---
 
+### E007：SUSFS 符号隐藏不完整泄漏 kallsyms + 银行 App "网络不给力"根因是设备时间错误
+
+**现象**：① `/proc/kallsyms` 中泄漏 `do_susfs_ioctl`、`__ksymtab_susfs_*`、`__kstrtab_susfs_*` 等 15 个 SUSFS 符号（kptr_restrict=2 时地址为 0 但符号名可见）。② 农业银行 App 二级页面报"网络不给力"。
+
+**根因**：① `50_add_susfs_in_kernel-4.19.patch` 的符号隐藏规则 `strncmp(iter->name, "susfs_", 6)` 只匹配"以 susfs_ 开头"的符号，漏掉了 `__ksymtab_susfs_*`/`__kstrtab_susfs_*`（导出符号表，前缀为 __ksymtab_/__kstrtab_）和 `do_susfs_ioctl`。② 银行 App "网络不给力"真正根因是**设备系统时间错误（RTC 慢约10小时）**：App 请求 `mgw.htm` 用设备时间生成签名，服务器校验 `Result-Status: 7003 验签-时效性失败`，App 显示"网络不给力"。此问题与内核/KSU/伪装无关（原厂内核同样复现），修正时间后立即恢复正常。
+
+**修复**：① 隐藏规则改为 `strstr(iter->name, "susfs")` + `strstr(iter->name, "kernelsu")`，覆盖全部含 susfs/kernelsu 子串的符号（含 __ksymtab/__kstrtab/do_susfs_ioctl）。② 时间问题：用户空间修正 RTC（`hwclock -w`）+ 配置 NTP（`settings put global ntp_server ntp.aliyun.com`），**非内核问题，无需固化到内核**。
+
+**教训**：
+- 字符串前缀匹配（strncmp）会漏掉带公共前缀的导出符号（`__ksymtab_susfs_*`），应使用 `strstr`（子串匹配）做符号隐藏
+- 排查"网络不给力"类问题，若所有本地伪装均无效且原厂内核同样复现，优先怀疑**系统时间/服务器签名时效性**，而非环境检测——通过 mitmproxy 解密看响应头 `Result-Status` 可快速定位
+- 银行 App 的 `mgw.htm` 网关返回 `Result-Status: 7003 验签-时效性失败` 是时间不同步的明确信号
+- 设备 RTC 时间错误 + `CONFIG_RTC_HCTOSYS=y`（开机 RTC→系统）会导致开机后时间错误，需确保 NTP 配置正确
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
