@@ -311,25 +311,27 @@ void susfs_restore_properties(void)
 		 * a valid value is better than a hole. */
 		/* Partition prop variants: ro.build.type spoofed "user" while
 		 * partition variants (ro.system.build.type, ro.vendor.build.type,
-		 * ro.odm.build.type, ro.product.*.model) stay real "userdebug" /
-		 * "KB2005" is a contradiction Hunter flags as "device/ROM may be
-		 * modified". These MUST be set here in the kernel: the init.rc
-		 * injection that runs ksud post-fs-data is ignored by this ROM's
-		 * init parser, and the 35s call_usermodehelper fallback runs as
-		 * u:r:kernel:s0 which cannot mmap the property areas. The kernel
-		 * property_set() runs in zygote exec (init domain) and is the
-		 * only reliable path. */
+		 * ro.odm.build.type) stay real "userdebug" is a contradiction
+		 * Hunter flags as "device/ROM may be modified". These MUST be set
+		 * here in the kernel: the init.rc injection that runs ksud
+		 * post-fs-data is ignored by this ROM's init parser, and the 35s
+		 * call_usermodehelper fallback runs as u:r:kernel:s0 which cannot
+		 * mmap the property areas. The kernel property_set() runs in
+		 * zygote exec (init domain) and is the only reliable path.
+		 *
+		 * Do NOT spoof the ro.product.*.model partition variants
+		 * (ro.product.system.model, ro.product.vendor.model,
+		 * ro.product.odm.model, ro.product.bootimage.model, etc.): the
+		 * CIB mobile banking app (com.cib.cibmb) pops up "detected unsafe
+		 * device (110)" and force-closes when they are changed from the
+		 * real KB2005 to KB2000. Keep them at the vendor build.prop
+		 * values (KB2005). ro.product.model itself stays KB2000 (real)
+		 * and Hunter accepts the mix. */
 		{ "ro.system.build.type",          "user" },
 		{ "ro.system_ext.build.type",      "user" },
 		{ "ro.vendor.build.type",          "user" },
 		{ "ro.vendor_dlkm.build.type",     "user" },
 		{ "ro.odm.build.type",             "user" },
-		{ "ro.product.system.model",       "KB2000" },
-		{ "ro.product.system_ext.model",   "KB2000" },
-		{ "ro.product.vendor.model",       "KB2000" },
-		{ "ro.product.vendor_dlkm.model",  "KB2000" },
-		{ "ro.product.odm.model",          "KB2000" },
-		{ "ro.product.bootimage.model",    "KB2000" },
 		{ NULL, NULL },
 	};
 	int i;
