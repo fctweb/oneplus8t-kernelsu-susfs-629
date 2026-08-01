@@ -203,6 +203,24 @@ if (unlikely(my_uname.release[0] == '\0' || spin_is_locked(&susfs_uname_spin_loc
 
 ---
 
+### E011：50_add 补丁 kallsyms.c hunk 行数声明错误导致 sys.c/fork.c 的 SUSFS hook 静默缺失
+
+**现象**：修复 E010 后（#706）uname 伪装仍不生效。`uname -v` 始终显示真实内核版本，即使 boot restore 已正确设置 my_uname（dmesg 确认）、ksud set-uname 返回 0。设备内核 `/proc/kallsyms` 中 `__arm64_sys_newuname` 和 `susfs_spoof_uname` 符号都存在，但 hook 未执行。
+
+**根因**：`50_add_susfs_in_kernel-4.19.patch` 中 kallsyms.c 段的 hunk 头声明为 `@@ -657,8 +657,18 @@`（新行数 18），但实际 hunk 内容为 **8 行上下文 + 11 行新增 = 19 行**。行数声明少 1，导致 GNU patch 在应用完 kallsyms.c 后报 `patch: **** malformed patch at line 1318`，**在 `kernel/sys.c` 和 `kernel/fork.c` 被处理前中止**。CI workflow 用 `patch ... || echo "WARNING: 50_add patch failed"` **静默忽略了失败**，构建"成功"但 sys.c（newuname hook）和 fork.c（susfs_task_state）的 SUSFS 代码完全缺失——这就是 uname 伪装不生效的真正根因。
+
+**修复**：将 kallsyms.c 段 hunk 头 `+657,18` 修正为 `+657,19`，使行数声明与实际 hunk 内容一致。修复后完整应用补丁：`sys.c`（susfs_spoof_uname ×2）、`fork.c`（susfs_task_state ×1）均成功打入。
+
+**教训**：
+- **GNU patch 在 hunk 行数声明错误时会静默中止并返回非零，但不会指出具体错误原因**——必须检查 `patch` 的退出码和完整 stderr，不能只看"patching file"输出
+- CI 中 `patch ... || echo "WARNING"` 的模式会**吞掉关键补丁失败**，导致"构建成功但功能缺失"的假象。应改为：关键补丁失败必须让 CI 报错（fail-fast），或在构建后验证关键符号存在
+- 验证 SUSFS hook 是否真正编译进内核：在干净 kernel 源码上运行 `patch -p1 --dry-run` 完整应用，确认 sys.c/fork.c 无 FAILED
+- 遗留：`task_mmu.c`（1/3 hunk）和 `proc_namespace.c`（1/4 hunk）因本地内核额外包含 `#include <linux/ctype.h>` 等差异而失败，影响 `SUS_KSTAT` 功能，不影响 uname 伪装，另行处理
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

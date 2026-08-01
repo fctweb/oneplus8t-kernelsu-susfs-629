@@ -1296,7 +1296,7 @@ diff --git a/kernel/kallsyms.c b/kernel/kallsyms.c
 index b8ec1dbd1be5..6c48a53a88ea 100644
 --- a/kernel/kallsyms.c
 +++ b/kernel/kallsyms.c
-@@ -657,8 +657,18 @@ static int s_show(struct seq_file *m, void *p)
+@@ -657,8 +657,19 @@ static int s_show(struct seq_file *m, void *p)
  		seq_printf(m, "%px %c %s\t[%s]\n", value,
  			   type, iter->name, iter->module_name);
  	} else
