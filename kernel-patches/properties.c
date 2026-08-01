@@ -163,20 +163,39 @@ static struct file *try_context(const char *context, const char *key,
 }
 
 /* Context files to try, in order. Mapped from plat_property_contexts
- * on LineageOS 20 (verified at runtime with dd + strings + O_RDWR test).
+ * + vendor_property_contexts on LineageOS 20 (verified at runtime with
+ * dd + strings + O_RDWR test).
  *
  * build_prop:             ro.build.*, ro.build.flavor, ro.build.display.id,
- *                         ro.build.user, ro.build.host
+ *                         ro.build.user, ro.build.host, ro.system.build.*,
+ *                         ro.product.system.*, ro.product.build.*, etc.
  * userdebug_or_eng_prop:  ro.debuggable
  * default_prop:           ro.lineage.* (×8), ro.modversion (wildcard rule: *)
  * bootloader_prop:        ro.boot.verifiedbootstate, ro.boot.type, etc.
- * build_bootimage_prop:   ro.bootimage.build.type, etc. */
+ * build_bootimage_prop:   ro.bootimage.build.type, ro.product.bootimage.*
+ * build_vendor_prop:      ro.vendor.build.*, ro.product.vendor.* (vendor_property_contexts)
+ * build_odm_prop:         ro.odm.build.*, ro.product.odm.* (vendor_property_contexts)
+ * vendor_default_prop:    ro.vendor_dlkm.*, ro.odm_dlkm.* (vendor_property_contexts)
+ *
+ * NOTE: try_context() safely skips a context whose backing file
+ * /dev/__properties__/u:object_r:<ctx>:s0 does not exist, so adding
+ * contexts for partition prop variants is harmless on ROMs that lack
+ * them. These partition props (ro.system.build.type etc.) CANNOT be
+ * set from userspace at boot: the init.rc injection that would run
+ * ksud post-fs-data is ignored by this ROM's init parser, and the
+ * fallback 35s call_usermodehelper runs as u:r:kernel:s0 which lacks
+ * SELinux permission to mmap the property areas. So the kernel
+ * property_set() path (zygote exec, init domain) is the only reliable
+ * place to spoof them. */
 static const char *prop_contexts[] = {
 	"build_prop",
 	"userdebug_or_eng_prop",
 	"default_prop",
 	"bootloader_prop",
 	"build_bootimage_prop",
+	"build_vendor_prop",
+	"build_odm_prop",
+	"vendor_default_prop",
 	NULL,
 };
 
@@ -290,6 +309,27 @@ void susfs_restore_properties(void)
 		 * ro.lineage.* presence is a LineageOS fingerprint but the
 		 * original LineageOS boot already sets them to valid values;
 		 * a valid value is better than a hole. */
+		/* Partition prop variants: ro.build.type spoofed "user" while
+		 * partition variants (ro.system.build.type, ro.vendor.build.type,
+		 * ro.odm.build.type, ro.product.*.model) stay real "userdebug" /
+		 * "KB2005" is a contradiction Hunter flags as "device/ROM may be
+		 * modified". These MUST be set here in the kernel: the init.rc
+		 * injection that runs ksud post-fs-data is ignored by this ROM's
+		 * init parser, and the 35s call_usermodehelper fallback runs as
+		 * u:r:kernel:s0 which cannot mmap the property areas. The kernel
+		 * property_set() runs in zygote exec (init domain) and is the
+		 * only reliable path. */
+		{ "ro.system.build.type",          "user" },
+		{ "ro.system_ext.build.type",      "user" },
+		{ "ro.vendor.build.type",          "user" },
+		{ "ro.vendor_dlkm.build.type",     "user" },
+		{ "ro.odm.build.type",             "user" },
+		{ "ro.product.system.model",       "KB2000" },
+		{ "ro.product.system_ext.model",   "KB2000" },
+		{ "ro.product.vendor.model",       "KB2000" },
+		{ "ro.product.vendor_dlkm.model",  "KB2000" },
+		{ "ro.product.odm.model",          "KB2000" },
+		{ "ro.product.bootimage.model",    "KB2000" },
 		{ NULL, NULL },
 	};
 	int i;

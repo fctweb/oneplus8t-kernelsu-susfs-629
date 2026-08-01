@@ -246,6 +246,35 @@ SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_pro
 
 ---
 
+### E013：分区属性变体伪装持久化失败 — resetprop 触发路径失效（init.rc 注入被忽略 + kernel 域无 SELinux 权限）
+
+**现象**：重启后 `ro.system.build.type`、`ro.vendor.build.type`、`ro.odm.build.type`、`ro.product.*.model` 等**分区属性变体**显示真实值（`userdebug`/`KB2005`），而内核 `susfs_restore_properties()` 设置的 `ro.build.type`、`ro.product.build.type` 等 9 个属性始终生效（`user`/`release-keys`）。
+
+**根因**（三层）：
+1. **触发路径 A 失效**：KERNEL_SU_RC 注入的 `on post-fs-data → exec root -- ksud post-fs-data` 被本 ROM（LineageOS 20 / Android 13）init 解析器忽略。`SUSFS_BOOT_RESTORE_COMPLETE.md` dmesg 实证：read_proxy 追加 375 字节成功，但 4 个注入段（post-fs-data / nonencrypted / vold.decrypt / boot_completed）全部被跳过，无 `starting service exec ksud` 日志。
+2. **触发路径 B 无权限**：实际触发的 35s delayed work `call_usermodehelper("/data/adb/ksud", ["ksud","post-fs-data"])`（`inject-boot-event-move.py`）从 kworker 触发，ksud 以 **`u:r:kernel:s0`** 运行。resetprop 对 `ro.*` 走 **mmap 直写**（`prop-rs-android/sys_prop.rs`：`force_skip = skip_svc || name.starts_with("ro.")`），需要 `O_RDWR` 打开 `/dev/__properties__/u:object_r:<ctx>:s0`（`sys_prop.rs:231`）——kernel 域被 SELinux 拒（`inject-boot-event-move.py` 注释实证："kworker SELinux context lacks permission to write to adb_data_file (verified: returns EACCES)"）。
+3. **错误被静默吞掉**：`susfs_config.rs:159-163` 用 `let _ = susfsd::set_prop(...)` 忽略所有失败，无任何日志，表现为"看起来没生效但不知哪里失败"。
+
+**辅助根因**：`restore_if_needed()`（`cli.rs:621`）在 `ensure_binaries()`（`init_event.rs:56`）之前执行，首次刷机时 `/data/adb/ksu/bin/resetprop` 符号链接尚未创建 → `Command::new` 失败（ENOENT）。
+
+**修复（方案 A：迁移到内核 property_set）**：
+- `prop_contexts[]` 补全 3 个 context：`build_vendor_prop`（ro.vendor.build.*、ro.product.vendor.*、ro.vendor_dlkm.*）、`build_odm_prop`（ro.product.odm.*）、`vendor_default_prop`（ro.odm.build.*）。已在设备确认 `/dev/__properties__/u:object_r:<ctx>:s0` 文件存在。
+- `susfs_restore_properties()` set_props[] 补全 11 个分区属性变体（ro.system.build.type、ro.system_ext.build.type、ro.vendor.build.type、ro.vendor_dlkm.build.type、ro.odm.build.type + 6 个 ro.product.*.model = KB2000）。
+- 内核在 zygote exec 时（init 域）执行，权限可靠（与现有 9 个属性相同）；`try_context()` 对不存在的 context 文件安全跳过（`filp_open` 失败返回 NULL），不影响其他 ROM。
+- `ro.odm_dlkm.build.type` 设备上不存在，`property_set` 返回 -ENOENT 静默跳过，无害。
+- ksud config 保留 set_props（双轨冗余）：resetprop 若成功同值覆盖无害，若失败内核兜底。
+
+**教训**：
+- **KernelSU-Next 的 init.rc 注入在本 ROM 不可靠**——不能依赖 `ksud post-fs-data`/`services` 事件做开机关键操作
+- **`call_usermodehelper` 从 kworker 触发时以 kernel 域运行**，无 SELinux 权限访问 Android 属性区域，所有用户态 resetprop 都会失败
+- **错误用 `let _ =` 吞掉是最坏的**——无法诊断。任何"静默失败"的配置应用都应加日志
+- 内核 `property_set`（zygote exec，init 域）是设置 ro.* 分区属性的**唯一可靠路径**
+- 分区属性实际 context 与 AOSP 规则可能不同（如 ro.odm.build.type 在 vendor_default_prop 而非 build_odm_prop）——**必须按设备实际确认**
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
