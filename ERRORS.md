@@ -145,6 +145,24 @@ avc: denied { execmod } for comm="android.bankabc"
 
 ---
 
+### E008：SUSFS 属性伪装残留字节导致 Hunter 检测 "Find Prop Modify Mark"
+
+**现象**：Hunter 环境检测工具报告 2 项 `Find Prop Modify Mark (Abnormal prop remains for: ro.build.type)`。
+
+**根因**：`kernel-patches/properties.c` 的 `property_set()` 写属性时**只写新值 + NUL 终止符，未清空整个 value[PROP_VALUE_MAX] 区**。当新值比旧值短时（如 `ro.build.type` 从 `userdebug` 改为 `user`，或 `ro.lineage.*` 清空为空字符串），value 区在 NUL 之后**残留旧值字节**（实测 `user\x00ebug\x00`，残留 `debug`）。bionic 的 `__system_property_update()` 会先 memset 整个 value 区再写入，因此 SUSFS 的残留被 Hunter 识别为 "Abnormal prop remains"（属性残留）。
+
+**修复**：`property_set()` 写入前先**清零整个 value[PROP_VALUE_MAX] 区**（循环 `kernel_write(fp, &zero, 1, &pos)` 92 次），再写新值 + NUL。这样任何属性（改短/清空）都不会残留旧字节。
+
+**教训**：
+- 内核直接改属性共享内存时，必须模拟 bionic 的完整写入协议（先 memset value 区再写），不能只写新值
+- 残留字节检测是安全工具（Hunter）识别属性伪装的常见手段——值变短时必须清除 NUL 后的旧数据
+- 验证方法：`dd if=/dev/__properties__/u:object_r:build_prop:s0 bs=1 count=4096` 检查 value 区 NUL 后是否全零
+- 注意：手动 resetprop 可临时清除残留，但重启后 SUSFS boot restore 会重新写入（带残留），必须修复内核源码
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

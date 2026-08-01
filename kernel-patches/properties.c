@@ -210,11 +210,28 @@ int property_set(const char *key, const char *value)
 	 * info_off is relative to data[] (after 128-byte header).
 	 * Convert to file offset: hdr_sz + info_off.
 	 * Then update serial length bits (31-24) to match new value length,
-	 * preserving serial counter (bits 23-0). */
+	 * preserving serial counter (bits 23-0).
+	 *
+	 * IMPORTANT: zero out the entire value[PROP_VALUE_MAX] region FIRST.
+	 * bionic __system_property_update() memsets the value buffer before
+	 * writing, so leaving old bytes after the new value + NUL (e.g. the
+	 * leftover "debug" after "userdebug"->"user") is detected by
+	 * security scanners as "Find Prop Modify Mark / Abnormal prop
+	 * remains" (Hunter checks the prop area for stale trailing bytes). */
 	{
 		loff_t file_off = (loff_t)PROP_AREA_HEADER_SZ + info_off;
 		uint32_t serial;
 		loff_t pos;
+		char zero = 0;
+		int i;
+
+		/* Clear the whole value buffer so no stale bytes remain after
+		 * the new value. The buffer is value[PROP_VALUE_MAX] right
+		 * after the serial field. */
+		pos = file_off + offsetof(struct prop_info_rec, value);
+		for (i = 0; i < PROP_VALUE_MAX; i++) {
+			kernel_write(fp, &zero, 1, &pos);
+		}
 
 		pos = file_off + offsetof(struct prop_info_rec, value);
 		kernel_write(fp, value, vlen, &pos);
