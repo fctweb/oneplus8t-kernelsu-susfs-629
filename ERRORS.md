@@ -275,6 +275,31 @@ SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_pro
 
 ---
 
+### E014：伪装 ro.product.*.model 分区变体导致兴业银行检测"非安全设备(110)"并强退
+
+**现象**：#709 把分区属性变体全部伪装成 `user`/`KB2000` 后，兴业银行（`com.cib.cibmb`，newland 加固）打开主页弹窗"检测到您的设备非安全设备(110)"并自动关闭。无 FATAL EXCEPTION、无 native tombstone（主动退出）。农行（`com.android.bankabc`）正常。
+
+**根因**：`#709`（E013 方案 A）把 `ro.product.*.model` 分区变体（ro.product.system.model、ro.product.vendor.model、ro.product.odm.model、ro.product.bootimage.model 等）从真实值 `KB2005` 伪装成 `KB2000`。兴业银行检测这些变体被修改后判定设备不安全并强退。
+
+**A/B 测试实证**（严格测试：强杀所有后台进程再只开兴业银行）：
+| 状态 | 兴业银行 |
+|------|---------|
+| build.type 变体=user + model 变体=KB2005（真实）| ✅ 无弹窗 |
+| build.type 变体=user + model 变体=KB2000（伪装）| ❌ 弹窗(110) 后强退 |
+| 全部真实（userdebug + KB2005）| ✅ 无弹窗 |
+
+**修复**：内核 `susfs_restore_properties()` 移除 6 个 `ro.product.*.model` 伪装（保留 5 个 build.type 变体伪装：ro.system.build.type、ro.system_ext.build.type、ro.vendor.build.type、ro.vendor_dlkm.build.type、ro.odm.build.type）。`ro.product.model` 本身是真实 KB2000，与 KB2005 变体并存，Hunter 接受（无"机型修改"提示）。同步移除 ksud `default_config()` 的 6 个 model 伪装（避免双轨 resetprop 成功时再触发）。
+
+**教训**：
+- **银行 App 会检测 `ro.product.*.model` 分区变体是否被修改**，比 Hunter 更严格——不能伪装 model 变体
+- **测试银行 App 必须强杀所有后台进程（包括银行自身）再打开**，否则残留进程干扰检测结果
+- 区分"build.type 变体伪装"（安全）和"model 变体伪装"（银行检测）——前者消除 userdebug 矛盾，后者触发银行安全检测
+- 农行（bankabc）不检测 model 变体，兴业（cibmb）检测——同一伪装对不同银行影响不同，需分别验证
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
