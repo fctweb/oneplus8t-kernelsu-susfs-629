@@ -275,18 +275,21 @@ void susfs_restore_properties(void)
 		{ "ro.product.build.tags",     "release-keys" },
 		{ "ro.product.build.fingerprint",
 		  "OnePlus/OnePlus8T/OnePlus8T:13/RKQ1.211119.001/R.13ebe2e_1-170dfb:user/release-keys" },
-		/* Clear lineage props with empty string instead of deleting.
-		 * Deleting zeroes the name's first byte creating a "hole" in
-		 * the trie, which Hunter detects as "Find Prop Modify Mark". */
-		{ "ro.lineage.version",               "" },
-		{ "ro.lineage.build.version",         "" },
-		{ "ro.lineage.build.version.plat.rev", "" },
-		{ "ro.lineage.build.version.plat.sdk", "" },
-		{ "ro.lineage.device",                "" },
-		{ "ro.lineage.display.version",       "" },
-		{ "ro.lineage.releasetype",           "" },
-		{ "ro.lineagelegal.url",              "" },
-		{ "ro.modversion",                    "" },
+		/* NOTE: Do NOT clear ro.lineage.* / ro.modversion here.
+		 * Clearing with an empty string leaves an orphaned prop_info
+		 * entry in the default_prop area (serial=0, value all zeros,
+		 * only the name prefix remains in the trie). Hunter detects
+		 * this as "Find Prop Modify Mark (Found hole in prop area:
+		 * u:object_r:default_prop:s0)".
+		 *
+		 * Setting them empty vs deleting both leave a hole: deleting
+		 * zeroes the name's first byte breaking the trie, setting
+		 * empty leaves a dangling serial=0 entry. Leave them alone so
+		 * the default_prop area layout stays pristine.
+		 *
+		 * ro.lineage.* presence is a LineageOS fingerprint but the
+		 * original LineageOS boot already sets them to valid values;
+		 * a valid value is better than a hole. */
 		{ NULL, NULL },
 	};
 	int i;

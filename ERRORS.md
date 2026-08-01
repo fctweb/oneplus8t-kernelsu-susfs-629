@@ -221,6 +221,31 @@ if (unlikely(my_uname.release[0] == '\0' || spin_is_locked(&susfs_uname_spin_loc
 
 ---
 
+### E012：SUSFS 清空 ro.lineage 属性产生 default_prop 孤儿 entry，触发 Hunter "Found hole in prop area"
+
+**现象**：Hunter 报 `Find Prop Modify Mark (Found hole in prop area:u:object_r:default_prop:s0)` ×2（清除 build_prop 区域的 KB2005 残留后从 3 个减为 2 个）。Momo 的 TEE 损坏、SELinux 宽容、非原厂系统均已在 TEESimulator + Enforcing + uname 伪装修复后消失，仅剩此 prop hole。
+
+**根因**：`susfs_restore_properties()` 里用**空字符串**清空 `ro.lineage.*`（×8）和 `ro.modversion`：
+```c
+{ "ro.lineage.version", "" }, ... { "ro.modversion", "" },
+```
+SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_prop:s0` 做 `kernel_write`：只把 serial 清零、value 清零，但 **prop_info entry 和 trie 中的 name 前缀没有移除**。结果在 default_prop 区域留下**孤儿 entry**（serial=0、value 全零、只有 `lineage`/`lineagelegal` 名字残留）。Hunter 用标准 prop_area 布局遍历 trie，发现这些"有名字无数据"的 entry，判定为 hole。
+
+**修复**：从 `susfs_restore_properties()` 的 set_props 数组**移除全部 ro.lineage.* / ro.modversion 清空条目**，让 LineageOS 系统自行管理这些属性（保持有效值）。理由：
+- 设空字符串和删除**都会**产生 hole：删除会清零 name 首字节破坏 trie；设空会留下 serial=0 的孤儿 entry（本 bug）
+- 保持有效值的 ro.lineage 属性比制造 hole 更好——属性区域布局保持原样
+- `ro.lineage.*` 的存在是 LineageOS 指纹，但原系统本身就有，伪装目标是消除"矛盾/修改痕迹"而非消除指纹本身
+
+**教训**：
+- SUSFS 内核 `property_set` 直接改属性区域（绕过 bionic 原子更新），**任何"清空"操作都会留下结构残留**（孤儿 entry），比"不处理"更糟
+- Hunter 的 "Found hole in prop area" 检测**属性区域布局完整性**（trie + prop_info 结构），不是属性值。值错误报 "Abnormal prop" / "Prop Modify Mark"，结构错误报 "hole"
+- 之前 73c1ed7 已移除过 lineage 清空（"avoid Abnormal prop remains"），后来 d5d7719 又因"删除会破坏 trie"加回空字符串方案——**两者都错，正确是不处理**
+- 遗留：本次修改需重启验证（#708）；设备上已有的孤儿 entry 需在干净构建后确认是否被 bionic 正常管理清理
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
