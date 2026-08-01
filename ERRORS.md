@@ -87,15 +87,43 @@ if (unlikely(uid == 0)) {
 
 ### E005：SUSFS open_redirect 重定向 procfs 路径导致银行 App "网络不给力"
 
-**现象**：农业银行 App（`com.android.bankabc`）能进入主界面（native 页面正常），但点击任何功能页（走 UC WebView/H5 容器）都显示"网络不给力，请稍后再试"。网络连通性正常（ping/DNS/HTTPS 全部通过），App 的 TCP 连接均为 ESTABLISHED，日志无 execmod/proc_net 相关 avc denial。
+**现象**：农业银行 App（`com.android.bankabc`）能进入主界面（native 页面正常），但点击任何功能页（走 UC WebView/H5 容器）都显示"网络不给力，请稍后再试"。网络连通性正常（ping/DNS/HTTPS 全部通过），App 的 TCP 连接均为 ESTABLISHED。
 
 **根因**：commit `91ced34` 在 `susfs_restore_boot()` 添加 open_redirect，把 `/proc/net/unix`、`/proc/self/mounts`、`/proc/version`、`/proc/self/attr/current` 重定向到 `/dev/null`（uid_scheme=2，对所有非 KSU 域进程生效）。银行 App 是 untrusted_app_30（非 KSU 域），UC WebView/H5 初始化读 `/proc/net/unix` 检查 socket、读 `/proc/self/mounts` 判断网络环境，拿到空数据 → 判定"网络异常" → 显示"网络不给力"。主界面 native 不走 H5 网络层所以正常。
 
 **修复**：回滚到 #670（commit `6391554`），`susfs_restore_boot()` 的 sus_path 为干净最小集，不含 open_redirect 调用；VFS 钩子在无 `INODE_STATE_OPEN_REDIRECT` 标记时休眠，对普通 App 无副作用。已加防回归注释。
 
+> ⚠️ 补充（E006）：移除 open_redirect 后问题依旧。进一步验证（原厂内核 + KSU 内核均复现）确认**真正根因是 SELinux execmod denial**（见 E006）。open_redirect 是次要因素，但修复它仍是正确的。
+
 **教训**：不要对 `/proc/net/unix`、`/proc/self/mounts` 等"App 正常运行也读取"的系统状态文件用 open_redirect 重定向到 /dev/null；open_redirect 只适合隐藏检测特征文件（su 二进制、ksu 目录）。若 App "能进主界面但功能页报错"，优先怀疑 H5/WebView 依赖的系统文件被重定向，而非 SELinux 规则缺失。`dmesg | grep open_redirect` 可核对实际注册规则（设备内核可能与工作区代码不一致）。
 
 **检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪"。**标签**：cross-project
+
+---
+
+### E006：SELinux execmod denial 导致银行 App SecNeo 加固壳失败显示"网络不给力"
+
+**现象**：农业银行 App（`com.android.bankabc`）能进入主界面，但点击功能页报"网络不给力"。**在原厂内核（无 KSU）、KSU 内核（完整属性伪装）、关闭 USB 调试、禁用 ReZygisk 的全部组合下均复现**。抓包显示 App 建立 TLS 连接收到服务器证书后**主动 RST 断开**。dmesg 持续出现：
+```
+avc: denied { execmod } for comm="android.bankabc"
+  path="/apex/com.android.runtime/lib64/bionic/libc.so"
+  tcontext=u:object_r:system_lib_file:s0 tclass=file
+avc: denied { execmod } for comm="android.bankabc"
+  path="/apex/com.android.runtime/bin/linker64"
+  tcontext=u:object_r:system_linker_exec:s0 tclass=file
+```
+
+**根因**：银行 App 使用 SecNeo（梆梆）加固壳（`com/secneo/apkwrapper`），加固壳需要在内存中修改 libc.so/linker64 代码段（内存加固/反调试补丁），需要 SELinux `execmod` 权限。Android 默认策略禁止 untrusted_app 对 system_lib_file/system_linker_exec 执行 execmod → 加固壳初始化失败 → App 业务功能无法执行 → 显示伪造的"网络不给力"。**此问题与内核/KSU/伪装无关**（原厂内核同样复现），是 Android SELinux 策略本身对 untrusted_app 的限制。
+
+**修复**：在 `inject-selinux-domain-init.py` 的 `fix_rules()` 中为 untrusted_app/untrusted_app_30 添加 execmod + proc_net + userdebug_or_eng_prop + proc_version + proc_pid_max + odsign_prop 共 32 条规则（与回滚前 1891b8f 一致）。这些规则经 `apply_kernelsu_rules()` 在 SELinux 策略加载时注入。
+
+**教训**：
+- **"网络不给力"类错误优先查 dmesg 的 avc denial**，而非假设网络故障或 root 检测——抓包确认 App 主动 RST 断开是"应用层拒绝"，avc execmod denial 是直接原因
+- 加固类银行 App（SecNeo/梆梆）需要 execmod 修改 libc/linker64，这是**功能硬需求**，不是 root 检测点
+- 排查顺序：① 原厂内核对照（排除内核因素）② 抓包看是否主动断开 ③ dmesg 查 avc denial ④ 查 execmod/属性类 denial
+- 回滚前的 execmod 规则当时"看似无效"可能是其他问题掩盖，需用 dmesg 验证规则是否真正进策略
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
 
 ---
 
