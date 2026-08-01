@@ -122,7 +122,7 @@ static void susfs_restore_boot(void)
 		for (i = 0; mounts[i]; i++) susfs_add_sus_mount_kernel(mounts[i]);
 	}
 
-	susfs_set_uname_kernel("4.19.304", "Default/4.19");
+	susfs_set_uname_kernel("4.19.304", "#1 SMP PREEMPT Fri Feb 9 00:58:10 UTC 2024");
 
 #ifdef CONFIG_KSU_SUSFS_ENABLE_LOG
 	susfs_set_log(false);

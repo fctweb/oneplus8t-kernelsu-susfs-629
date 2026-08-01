@@ -163,6 +163,24 @@ avc: denied { execmod } for comm="android.bankabc"
 
 ---
 
+### E009：SUSFS 属性变体不一致 + uname 伪装值异常导致 Hunter 检测 "设备机型&ROM可能被修改"
+
+**现象**：Hunter 检测报告 `设备机型&ROM可能被修改`。DeviceBaseInfo 显示 uname 为 `Linux localhost 4.19.304 Default/4.19 aarch64 Toybox`（version 字段 `Default/4.19` 明显是伪造值）。检查属性区发现大量属性变体不一致：`ro.build.type=user` 但 `ro.system.build.type=userdebug`、`ro.product.build.type=userdebug`、`ro.odm.build.type=userdebug` 等；`ro.product.model=KB2000` 但 `ro.product.system.model=KB2005` 等。
+
+**根因**：① SUSFS `susfs_restore_properties()` 只伪装了 `ro.build.type`/`ro.build.flavor` 等基础属性，遗漏了 `ro.product.build.*`、`ro.system.build.*`、`ro.vendor.build.*`、`ro.odm.build.type` 等分区属性变体——它们保留了真实的 `userdebug`/`KB2005`，与伪装值矛盾，Hunter 检测到属性不一致。② boot restore 的 `susfs_set_uname_kernel("4.19.304", "Default/4.19")` 把 uname version 伪装成 `Default/4.19`，这不是真实内核 version 格式（应为 `#1 SMP PREEMPT ...`），Hunter 一眼识别为伪造。
+
+**修复**：① 在 `susfs_restore_properties()` 补充伪装 `ro.product.build.type=user`、`ro.product.build.tags=release-keys`、`ro.product.build.fingerprint`（与 ro.build.* 一致）。② uname version 改为合理的原厂格式 `#1 SMP PREEMPT Fri Feb 9 00:58:10 UTC 2024`（与原厂 LineageOS 内核 /proc/version 的 version 段一致）。
+
+**教训**：
+- Android 分区属性（`ro.system.*`、`ro.vendor.*`、`ro.product.*`、`ro.odm.*`）是属性伪装的常见遗漏点——伪装 `ro.build.*` 时必须同步所有分区变体，否则属性间矛盾会被检测
+- uname 伪装的 version 字段不能用 `Default/4.19` 这种占位符，必须是真实内核 version 格式（`#1 SMP PREEMPT <date>`），否则一目了然
+- 验证属性一致性：`getprop | grep -E "build.type|\.model\]"` 检查所有变体
+- `ro.product.build.*`/`ro.product.system.model` 在 build_prop context 可被 SUSFS 定位；`ro.system.build.type` 等动态属性需用户空间 resetprop（ksud susfs_config.json）
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

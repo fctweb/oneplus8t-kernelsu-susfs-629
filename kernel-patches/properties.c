@@ -267,6 +267,14 @@ void susfs_restore_properties(void)
 		{ "ro.boot.verifiedbootstate", "green" },
 		{ "ro.bootimage.build.type",   "user" },
 		{ "ro.boot.type",              "release" },
+		/* ro.product.build.* mirrors ro.build.* and must stay consistent.
+		 * ro.product.build.type was left as real "userdebug" while
+		 * ro.build.type is spoofed "user" -> contradiction detected by
+		 * Hunter as "device/ROM may be modified" (DeviceBaseInfo check). */
+		{ "ro.product.build.type",     "user" },
+		{ "ro.product.build.tags",     "release-keys" },
+		{ "ro.product.build.fingerprint",
+		  "OnePlus/OnePlus8T/OnePlus8T:13/RKQ1.211119.001/R.13ebe2e_1-170dfb:user/release-keys" },
 		/* Clear lineage props with empty string instead of deleting.
 		 * Deleting zeroes the name's first byte creating a "hole" in
 		 * the trie, which Hunter detects as "Find Prop Modify Mark". */
