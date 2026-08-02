@@ -92,6 +92,8 @@ def main():
         "\t * other apps stay hidden (bank/Hunter detection preserved).\n"
         "\t * ksu_is_allow_uid_for_current() returns true for uid 0 only in\n"
         "\t * the ksu domain, so init->zygote is NOT whitelisted. */\n"
+        "\tpr_info(\"KSU_FORK: uid=%d is_ksu_domain=%d\\n\",\n"
+        "\t\tcurrent_uid().val, __ksu_is_allow_uid_for_current(current_uid().val));\n"
         "\tif (!__ksu_is_allow_uid_for_current(current_uid().val))\n"
         "\t\tp->susfs_task_state |= TASK_STRUCT_NON_ROOT_USER_APP_PROC;\n"
         "#endif"
