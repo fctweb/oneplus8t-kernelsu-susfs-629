@@ -65,12 +65,33 @@ void susfs_schedule_module_move(void)
 
 /* Called from susfs_cleanup_dwork_fn to trigger post-fs-data.d scripts.
  * Moved here from susfs_restore_boot() because call_usermodehelper
- * does not work reliably at 4.7s (khelper wq not fully ready). */
+ * does not work reliably at 4.7s (khelper wq not fully ready).
+ *
+ * Must run ksud under ksu_cred (ksu domain, permissive): the kworker
+ * context is u:r:kernel:s0 which lacks SELinux permission to read
+ * /data/adb/* (adb_data_file) and to open /dev/__properties__/* for
+ * resetprop. Without override_creds, ksud post-fs-data runs in kernel
+ * domain, cannot apply config set_props/delete_props, and cannot exec
+ * module post-fs-data.sh — so ro.lineage.* fingerprint props stay
+ * populated and the CIB bank app (com.cib.cibmb) force-closes with
+ * "unsafe device (110)". ksu domain is permissive (rules.c) so the
+ * whole config application path works. */
 static void susfs_trigger_post_fs_data(void)
 {
-	int ret = call_usermodehelper("/data/adb/ksud",
-		(char *[]){"ksud", "post-fs-data", NULL},
-		NULL, UMH_NO_WAIT);
+	const struct cred *old;
+	int ret;
+
+	if (ksu_cred) {
+		old = override_creds(ksu_cred);
+		ret = call_usermodehelper("/data/adb/ksud",
+			(char *[]){"ksud", "post-fs-data", NULL},
+			NULL, UMH_NO_WAIT);
+		revert_creds(old);
+	} else {
+		ret = call_usermodehelper("/data/adb/ksud",
+			(char *[]){"ksud", "post-fs-data", NULL},
+			NULL, UMH_NO_WAIT);
+	}
 	printk(KERN_INFO "susfs: ksud post-fs-data ret=%d\n", ret);
 }
 

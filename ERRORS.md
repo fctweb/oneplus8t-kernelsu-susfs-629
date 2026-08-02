@@ -300,6 +300,41 @@ SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_pro
 
 ---
 
+### E015：兴业银行弹窗根因 = ro.lineage.* 指纹暴露 + susfs_trigger_post_fs_data 缺 override_creds 致 35s ksud 以 kernel 域运行
+
+**现象**：干净 LineageOS + #702/#707 内核上兴业银行（`com.cib.cibmb`）正常；#708（E012）后弹窗"非安全设备(110)"并强退。农行不受影响。
+
+**二分法定位**（逐个刷入测试）：
+| 构建 | 改动 | 兴业银行 |
+|------|------|---------|
+| #702 (E006) | 基础 | ✅ 正常 |
+| #705 (E009) | 分区属性变体 | ✅ 正常 |
+| #707 (E011) | 50_add 补丁 | ✅ 正常 |
+| #708 (E012) | **移除 ro.lineage 清空** | ❌ 弹窗 |
+| #708 + 手动 resetprop 清空 ro.lineage | | ✅ 恢复 |
+
+**根因**：兴业银行检测 `ro.lineage.*`/`ro.modversion` 属性**存在且有值**（LineageOS 定制 ROM 指纹）。#707 的内核 `susfs_restore_properties()` 清空这些属性（空字符串）→ 兴业检测不到指纹 → 正常。**E012 移除清空** → 指纹恢复有值 → 兴业弹窗。
+
+**关键反转**：E012 原以为"清空产生 orphan hole（Hunter 检测）"必须移除，但二分法证明：
+- **内核 property_set 清空**（kernel_write 直接写，不更新全局 serial/futex）→ 产生 orphan → Hunter hole
+- **resetprop 清空**（走 bionic 协议，正确更新全局 serial/futex）→ **结构完整，Hunter 无 hole**，且兴业正常
+
+**第二个缺陷**：`susfs_trigger_post_fs_data()`（`inject-boot-event-move.py`）用 `call_usermodehelper` 触发 `ksud post-fs-data` 时**没有 override_creds(ksu_cred)**。kworker 上下文是 `u:r:kernel:s0`，无 SELinux 权限读 `/data/adb/*` 和打开 `/dev/__properties__/*` → 35s 的 ksud post-fs-data 无法应用 config set_props、无法执行模块 post-fs-data.sh。已验证 `runcon u:r:kernel:s0 ls /data/adb/modules` → Permission denied；而 `runcon u:r:ksu:s0` 正常。
+
+**修复**：
+1. `inject-boot-event-move.py`：`susfs_trigger_post_fs_data()` 用 `override_creds(ksu_cred)` 包裹 `call_usermodehelper`，让 35s 的 ksud post-fs-data 以 ksu 域（permissive，rules.c:95,106）运行
+2. config `set_props` 加 9 个 ro.lineage.*/ro.modversion = ""（ksud 用 resetprop 清空，结构完整）
+
+**教训**：
+- **E012 的修复方向错了**——它用"移除清空"消除 Hunter hole，副作用是暴露 ro.lineage 指纹触发兴业弹窗。正确做法是**改用 resetprop 清空**（结构完整）而非内核 property_set
+- **内核 property_set（kernel_write 直写）与 resetprop（bionic 协议）清空属性的结果不同**——前者产生 orphan（Hunter 检测），后者结构完整
+- **`call_usermodehelper` 从 kworker 触发时以 kernel 域运行**，无 SELinux 权限访问 /data/adb 和属性区域——必须 override_creds(ksu_cred) 才能让子进程做用户态操作
+- **二分法排查非常有效**：从 #702 到 #709 逐个刷入，快速定位 E012 为触发点
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
