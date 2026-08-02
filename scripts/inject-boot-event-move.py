@@ -89,7 +89,10 @@ static int susfs_umh_init(struct subprocess_info *info, struct cred *new)
 	 * for resetprop. ksu domain is permissive (rules.c) — all perms.
 	 * setup_selinux() and KERNEL_SU_CONTEXT come from selinux/selinux.h
 	 * which boot_event.c already includes. */
+	printk(KERN_INFO "susfs: umh init callback, path=%s\n", info->path);
 	setup_selinux(KERNEL_SU_CONTEXT, new);
+	printk(KERN_INFO "susfs: umh init done, child sid set to %s\n",
+	       KERNEL_SU_CONTEXT);
 	return 0;
 }
 
