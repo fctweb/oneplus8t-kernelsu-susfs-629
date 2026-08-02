@@ -135,6 +135,15 @@ jobs:
           echo "Makefile KSU_VERSION: $(grep 'DKSU_VERSION' drivers/kernelsu/Makefile 2>/dev/null | head -1)"
           echo "Kbuild KSU_VERSION: $(grep 'DKSU_VERSION' drivers/kernelsu/Kbuild 2>/dev/null | head -1)"
 
+      - name: Fix SELinux exec_sid to prevent domain transition on exec
+        working-directory: kernel
+        run: |
+          echo "=== Fixing SELinux exec_sid in transive_to_domain ==="
+          patch -p1 --forward --fuzz=3 < ../kernel-patches/fix_selinux_exec_sid.patch || \
+            echo "WARNING: fix_selinux_exec_sid.patch failed (may already be applied)"
+          echo "=== Verification ==="
+          grep -c 'tsec->exec_sid = sid' drivers/kernelsu/selinux/selinux.c 2>/dev/null || echo "NOT FOUND"
+
       - name: Apply our boot_event.c + properties.c patch (Kbuild only)
         working-directory: kernel
         run: |

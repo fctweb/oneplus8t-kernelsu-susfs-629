@@ -397,6 +397,36 @@ static int susfs_umh_init(struct subprocess_info *info, struct cred *new) {
 
 ---
 
+### E018：SELinux domain transition 导致 root shell fork 子进程 exec /data/adb/ksud 被 SIGKILL
+
+**现象**：`ksud debug su` 创建的 root shell 中，`id` 命令正常（10/10 成功），但 `ksud --version` 或任何 exec `/data/adb/ksud` 的子进程被 SIGKILL（9/10 失败）。Manager App 设置页 feature check 大部分 Killed，root shell 内 `id` 等简单命令正常。
+
+**根因**（三层链式失效）：
+
+1. **`exec_sid` 未设置导致 SELinux domain transition**：`escape_with_root_profile()` 调用 `setup_selinux(profile->selinux_domain, cred)` → `transive_to_domain(KERNEL_SU_CONTEXT, cred, false)`。该函数设置 `tsec->sid = ksu_sid` 但**未设置 `tsec->exec_sid`**（保留为 0）。`command.exec("sh")` 时，内核 SELinux 检查 `exec_sid=0` → 走 type_transition 规则 → `ksu` 属于 `domain` 属性组 → Android 策略有 `type_transition domain shell_exec:process shell` → 进程从 `u:r:ksu:s0` 被 transition 到 `u:r:shell:s0`。
+
+2. **`is_ksu_domain()` 对 shell 域返回 false**：exec 后 root shell 的 `tsec->sid` 是 shell 域 SID，`cached_su_sid` 是 ksu 域 SID，两者不相等 → `is_ksu_domain()` 返回 false。
+
+3. **fork 白名单检查失效**：`inject-fork-susfs-whitelist.py` 在 fork 时调用 `__ksu_is_allow_uid_for_current(0)` → `is_ksu_domain()` → false → `!false` → true → 子进程被设置 `susfs_task_state` 隐藏位 → 子进程 exec `/data/adb/ksud` 时 SUSFS 检测到隐藏位 → SIGKILL。
+
+**修复**：在 `transive_to_domain()` 中 `tsec->sid = sid` 之后添加 `tsec->exec_sid = sid`。当 `clear_exec_sid=true` 时，随后被 `exec_sid = 0` 覆盖（行为不变）。当 `clear_exec_sid=false` 时（正常提权路径），`exec_sid` 被设置为目标域 SID，exec 时内核 SELinux 使用 `exec_sid` 作为新域，绕过 type_transition 规则，进程保持在 ksu 域。
+
+**验证**：
+- `grep -c 'tsec->exec_sid = sid' drivers/kernelsu/selinux/selinux.c` → 返回行数 > 0
+- `strings Image | grep exec_sid_fix` → 可选标记常量
+- 刷机后 `adb shell dmesg | grep "ksu_debug: su"` → 确认提权成功
+- root shell 中 `ksud --version` 连续 10 次成功
+
+**教训**：
+- `transive_to_domain()` 只设置 `tsec->sid` 不设置 `tsec->exec_sid` 是一个隐式缺陷——进程在 ksu 域 exec 任何二进制时都会触发 SELinux domain transition
+- Android 原生策略 `type_transition domain shell_exec:process shell` 会让所有属于 `domain` 属性组的域（包括 ksu）在 exec shell 时被 transition 到 shell 域
+- `ksu_permissive` 只影响权限检查，不影响 domain transition——即使 permissive 也会发生 transition
+- 修复方式：`tsec->exec_sid = sid` 让 exec 保持在目标域，而非依赖 type_transition 规则
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
