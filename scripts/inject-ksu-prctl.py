@@ -133,12 +133,6 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
         return 0;
 
     if (arg2 == KSU_INSTALL_MAGIC2) {
-        /* Kill old libksud instance for this UID before installing new fd.
-         * Prevents orphaned daemon processes from accumulating at 100% CPU. */
-        {
-            uid_t uid = current_uid().val % KSU_PER_USER_RANGE;
-            ksu_kill_old_instance(uid);
-        }
         int fd = ksu_install_fd();
         printk(KERN_INFO "ksu_prctl: INSTALL_MAGIC2 pid=%d fd=%d seccomp_before=%d\\n",
                current->pid, fd, current->seccomp.mode);
