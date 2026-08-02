@@ -2,9 +2,9 @@ diff --git a/drivers/kernelsu/selinux/selinux.c b/drivers/kernelsu/selinux/selin
 --- a/drivers/kernelsu/selinux/selinux.c
 +++ b/drivers/kernelsu/selinux/selinux.c
 @@ -45,6 +45,7 @@
- 	if (!error) {
- 		tsec->sid = sid;
+	if (!error) {
+		tsec->sid = sid;
 +		tsec->exec_sid = sid;
- 		tsec->create_sid = 0;
- 		tsec->keycreate_sid = 0;
- 		tsec->sockcreate_sid = 0;
+		tsec->create_sid = 0;
+		tsec->keycreate_sid = 0;
+		tsec->sockcreate_sid = 0;
