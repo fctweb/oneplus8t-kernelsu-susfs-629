@@ -139,10 +139,16 @@ jobs:
         working-directory: kernel
         run: |
           echo "=== Fixing SELinux exec_sid in transive_to_domain ==="
-          patch -p1 --forward --fuzz=3 < ../kernel-patches/fix_selinux_exec_sid.patch || \
-            echo "WARNING: fix_selinux_exec_sid.patch failed (may already be applied)"
+          # Legacy branch uses 4-space indent. Insert after 'tsec->create_sid = 0;'
+          FILE="drivers/kernelsu/selinux/selinux.c"
+          if grep -q 'tsec->exec_sid = sid' "$FILE" 2>/dev/null; then
+            echo "  Already applied, skipping"
+          else
+            sed -i '/^        tsec->create_sid = 0;$/a\        tsec->exec_sid = sid;' "$FILE"
+            echo "  Applied: added tsec->exec_sid = sid"
+          fi
           echo "=== Verification ==="
-          grep -c 'tsec->exec_sid = sid' drivers/kernelsu/selinux/selinux.c 2>/dev/null || echo "NOT FOUND"
+          grep -c 'tsec->exec_sid = sid' "$FILE" 2>/dev/null || echo "NOT FOUND"
 
       - name: Apply our boot_event.c + properties.c patch (Kbuild only)
         working-directory: kernel
