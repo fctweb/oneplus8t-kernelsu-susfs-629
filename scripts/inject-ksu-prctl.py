@@ -101,8 +101,8 @@ static void ksu_kill_old_instance(uid_t uid)
                     goto update_entry;
                 }
             }
-            if (t->exit_state == 0) {
-                printk(KERN_INFO "ksu_prctl: kill old pid=%d uid=%d\\n",
+if (t->exit_state == 0 && t != current->real_parent) {
+                printk(KERN_INFO "ksu_prctl: kill old pid=%d uid=%d\n",
                        old_pid, uid);
                 send_sig(SIGKILL, t, 0);
             }
