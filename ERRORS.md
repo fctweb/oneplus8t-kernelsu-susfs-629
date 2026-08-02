@@ -361,6 +361,32 @@ SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_pro
 
 ---
 
+### E017：override_creds(ksu_cred) 对 call_usermodehelper 无效 — 需用 umh init 回调设置子进程 ksu 域
+
+**现象**：E015 的 `susfs_trigger_post_fs_data()` 用 `override_creds(ksu_cred)` 包裹 `call_usermodehelper`，期望 35s 的 ksud 以 ksu 域运行。但 #713 实测：35s 触发 `ksud post-fs-data ret=0`，却**没有** `restoring SUSFS config` 日志，ro.lineage 未被清空——config 应用失败。手动执行（root shell 域）则正常。
+
+**根因**：`call_usermodehelper_exec_async()`（kernel/kernel/umh.c）在**独立的 usermodehelper 线程**执行，先 `new = prepare_kernel_cred(current)` 创建子进程 cred，再 `commit_creds(new)`。**该子进程 cred 不继承调用线程的 override_creds**——`override_creds(ksu_cred)` 只改变调用线程（kworker）的 cred，usermodehelper 子进程仍以 init/kernel 域运行，无法访问 `/data/adb` 和属性区域。
+
+**修复**：改用 `call_usermodehelper_setup()` + **init 回调**。umh.c 在 `commit_creds(new)` **之前**调用 `sub_info->init(sub_info, new)`，可在回调里用 `setup_selinux(KERNEL_SU_CONTEXT, new)`（导出的 selinux.c 函数，boot_event.c 已 include selinux.h）设置子进程 cred 的 SELinux sid 为 ksu 域。需包含 `linux/umh.h`。
+
+```c
+static int susfs_umh_init(struct subprocess_info *info, struct cred *new) {
+    setup_selinux(KERNEL_SU_CONTEXT, new);   // 子进程 -> u:r:ksu:s0
+    return 0;
+}
+// 用 call_usermodehelper_setup + exec 替代直接 call_usermodehelper
+```
+
+**教训**：
+- **`override_creds` 只影响当前线程**，对 `call_usermodehelper` 子进程**无效**（子进程独立线程，prepare_kernel_cred(current) 的 current 是 usermodehelper 线程）
+- **umh 的 init 回调**（`sub_info->init`）是在 commit_creds 前修改子进程 cred 的正确时机
+- 验证"子进程域是否生效"不能只看 `call_usermodehelper` 返回值（ret=0 表示 exec 成功，不代表子进程权限正确）——要看子进程是否真的执行了目标操作（如 config 是否应用）
+- `setup_selinux(domain, cred)` 是导出函数，可对任意 cred 设置 SELinux 域
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

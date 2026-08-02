@@ -18,6 +18,7 @@ import sys, os
 SUSFS_BLOCK = r"""
 
 #ifdef CONFIG_KSU_SUSFS
+#include <linux/umh.h>
 static bool susfs_boot_restored __read_mostly = false;
 
 /* Delayed work — runs 35s after boot when fscrypt DE key is loaded.
@@ -70,28 +71,42 @@ void susfs_schedule_module_move(void)
  * Must run ksud under ksu_cred (ksu domain, permissive): the kworker
  * context is u:r:kernel:s0 which lacks SELinux permission to read
  * files under /data/adb/ and to open /dev/__properties__/ for
- * resetprop. Without override_creds, ksud post-fs-data runs in kernel
- * domain, cannot apply config set_props/delete_props, and cannot exec
- * module post-fs-data.sh — so ro.lineage.* fingerprint props stay
+ * resetprop. NOTE: override_creds(ksu_cred) around call_usermodehelper
+ * is NOT enough — the usermodehelper child runs in its own kernel/init
+ * domain, it does not inherit the caller's overridden creds. Instead we
+ * must set the child's cred via the init callback of
+ * call_usermodehelper_setup(), which runs inside the child before exec.
+ * Without this, ksud post-fs-data cannot apply config set_props /
+ * delete_props / module scripts — ro.lineage.* fingerprint props stay
  * populated and the CIB bank app (com.cib.cibmb) force-closes with
- * "unsafe device (110)". ksu domain is permissive (rules.c) so the
- * whole config application path works. */
+ * "unsafe device (110)". */
+static int susfs_umh_init(struct subprocess_info *info, struct cred *new)
+{
+	/* The child (ksud) gets `new` cred from prepare_kernel_cred(current)
+	 * inside call_usermodehelper_exec_async, and our init callback runs
+	 * before commit_creds(new). Set its SELinux sid to the ksu domain
+	 * (u:r:ksu:s0) so ksud can access /data/adb and the property areas
+	 * for resetprop. ksu domain is permissive (rules.c) — all perms.
+	 * setup_selinux() and KERNEL_SU_CONTEXT come from selinux/selinux.h
+	 * which boot_event.c already includes. */
+	setup_selinux(KERNEL_SU_CONTEXT, new);
+	return 0;
+}
+
 static void susfs_trigger_post_fs_data(void)
 {
-	const struct cred *old;
+	struct subprocess_info *sub_info;
+	static char *envp[] = { "PATH=/sbin:/system/bin:/system/xbin", NULL };
 	int ret;
 
-	if (ksu_cred) {
-		old = override_creds(ksu_cred);
-		ret = call_usermodehelper("/data/adb/ksud",
-			(char *[]){"ksud", "post-fs-data", NULL},
-			NULL, UMH_NO_WAIT);
-		revert_creds(old);
-	} else {
-		ret = call_usermodehelper("/data/adb/ksud",
-			(char *[]){"ksud", "post-fs-data", NULL},
-			NULL, UMH_NO_WAIT);
+	sub_info = call_usermodehelper_setup("/data/adb/ksud",
+		(char *[]){"ksud", "post-fs-data", NULL},
+		envp, GFP_KERNEL, susfs_umh_init, NULL, NULL);
+	if (!sub_info) {
+		printk(KERN_INFO "susfs: usermodehelper_setup failed\n");
+		return;
 	}
+	ret = call_usermodehelper_exec(sub_info, UMH_NO_WAIT);
 	printk(KERN_INFO "susfs: ksud post-fs-data ret=%d\n", ret);
 }
 
