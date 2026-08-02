@@ -102,6 +102,19 @@ static void susfs_trigger_post_fs_data(void)
 	static char *envp[] = { "PATH=/sbin:/system/bin:/system/xbin", NULL };
 	int ret;
 
+	/* NOTE: keep CONFIG_STATIC_USERMODEHELPER=y (default) for the REST
+	 * of the system — disabling it at boot activates some other
+	 * usermodehelper that makes system_server's
+	 * Build.isBuildConsistent()/verifyWithoutAvb() return error=1,
+	 * popping "Your device has an internal problem". (Verified: with
+	 * STATIC=y that popup is gone.)
+	 *
+	 * With STATIC=y + STATIC_USERMODEHELPER_PATH="" call_usermodehelper_setup
+	 * forces sub_info->path to "" and call_usermodehelper_exec() skips the
+	 * work. So after setup() we re-point sub_info->path back to the real
+	 * ksud binary (bypassing ONLY this helper, leaving the rest of the
+	 * system's usermodehelpers disabled as intended) so the 35s delayed
+	 * work can actually exec ksud post-fs-data. */
 	sub_info = call_usermodehelper_setup("/data/adb/ksud",
 		(char *[]){"ksud", "post-fs-data", NULL},
 		envp, GFP_KERNEL, susfs_umh_init, NULL, NULL);
@@ -109,6 +122,8 @@ static void susfs_trigger_post_fs_data(void)
 		printk(KERN_INFO "susfs: usermodehelper_setup failed\n");
 		return;
 	}
+	/* Override STATIC's "" with the real ksud path (cast away const). */
+	*((const char **)&sub_info->path) = "/data/adb/ksud";
 	ret = call_usermodehelper_exec(sub_info, UMH_NO_WAIT);
 	printk(KERN_INFO "susfs: ksud post-fs-data ret=%d\n", ret);
 }
