@@ -277,6 +277,8 @@ SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_pro
 
 ### E014：伪装 ro.product.*.model 分区变体导致兴业银行检测"非安全设备(110)"并强退
 
+> ⚠️ **已修正（E016）**：本条目为**误判**。兴业弹窗真正根因是 `ro.lineage.*` 指纹（E015），**不是 model 伪装**。model 伪装（KB2000）已加回。误判源于用 `HomeActivity` 测试（跳过安全检测）而非真实入口 `FirstPageActivity`。保留此条目作为误判教训。
+
 **现象**：#709 把分区属性变体全部伪装成 `user`/`KB2000` 后，兴业银行（`com.cib.cibmb`，newland 加固）打开主页弹窗"检测到您的设备非安全设备(110)"并自动关闭。无 FATAL EXCEPTION、无 native tombstone（主动退出）。农行（`com.android.bankabc`）正常。
 
 **根因**：`#709`（E013 方案 A）把 `ro.product.*.model` 分区变体（ro.product.system.model、ro.product.vendor.model、ro.product.odm.model、ro.product.bootimage.model 等）从真实值 `KB2005` 伪装成 `KB2000`。兴业银行检测这些变体被修改后判定设备不安全并强退。
@@ -330,6 +332,30 @@ SUSFS 的 `property_set()` 直接对 `/dev/__properties__/u:object_r:default_pro
 - **内核 property_set（kernel_write 直写）与 resetprop（bionic 协议）清空属性的结果不同**——前者产生 orphan（Hunter 检测），后者结构完整
 - **`call_usermodehelper` 从 kworker 触发时以 kernel 域运行**，无 SELinux 权限访问 /data/adb 和属性区域——必须 override_creds(ksu_cred) 才能让子进程做用户态操作
 - **二分法排查非常有效**：从 #702 到 #709 逐个刷入，快速定位 E012 为触发点
+
+**检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
+
+---
+
+### E016：E014 误判修正 — ro.product.*.model 伪装可安全加回（兴业弹窗真正根因是 ro.lineage 指纹）
+
+**背景**：E014 曾把兴业银行弹窗归因于 `ro.product.*.model` 变体伪装成 KB2000，移除了 6 个 model 伪装。后用**正确测试方式**（`FirstPageActivity` 真实入口冷启动，而非 `HomeActivity`）验证，发现 model 伪装**不是**兴业弹窗根因。
+
+**实证**（干净 LineageOS 上 A/B 测试，均用 FirstPageActivity）：
+| model 变体 | ro.lineage | 兴业银行 | Hunter |
+|-----------|-----------|---------|--------|
+| KB2005（真实）| 有值 | ❌ 弹窗 | — |
+| KB2005（真实）| 已清空 | ✅ 正常 | ✅ 无 hole |
+| **KB2000（伪装）**| **已清空** | ✅ **正常** | ✅ **无 hole** |
+
+**结论**：兴业银行检测的是 **`ro.lineage.*`/`ro.modversion` 属性有值**（LineageOS 指纹，见 E015），**不是 model 变体**。E014 移除了 6 个 model 伪装是**误判**。
+
+**修复**：将 6 个 `ro.product.*.model` 伪装（KB2000）**加回**内核 `susfs_restore_properties()`（与 `ro.product.model=KB2000` 真实值一致，Hunter 无"机型修改"矛盾）。总 set_props 恢复到 23 个。
+
+**教训**：
+- **测试银行 App 必须用真实入口 Activity（MANIFEST 的 LAUNCHER，如 `FirstPageActivity`），不能用 `am start -n ...HomeActivity`**——后者跳过安全检测，导致误判
+- E014 的错误教训：用错误测试方式（HomeActivity）得出错误结论（model 伪装导致弹窗），实际是 ro.lineage 指纹 + 测试方式问题
+- **A/B 测试要用用户实际的操作路径**（桌面图标 → LAUNCHER Activity），而非开发者跳转
 
 **检查清单锚点**：TEST_PROCEDURE.md 第 2 节"全链路追踪" + 第 3 节"边界条件和副作用验证"。**标签**：cross-project
 

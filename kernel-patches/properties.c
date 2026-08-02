@@ -319,19 +319,32 @@ void susfs_restore_properties(void)
 		 * mmap the property areas. The kernel property_set() runs in
 		 * zygote exec (init domain) and is the only reliable path.
 		 *
-		 * Do NOT spoof the ro.product.*.model partition variants
-		 * (ro.product.system.model, ro.product.vendor.model,
-		 * ro.product.odm.model, ro.product.bootimage.model, etc.): the
-		 * CIB mobile banking app (com.cib.cibmb) pops up "detected unsafe
-		 * device (110)" and force-closes when they are changed from the
-		 * real KB2005 to KB2000. Keep them at the vendor build.prop
-		 * values (KB2005). ro.product.model itself stays KB2000 (real)
-		 * and Hunter accepts the mix. */
+		 * Model partition variants are spoofed to KB2000 so they match
+		 * ro.product.model (real KB2000). E014 wrongly attributed CIB
+		 * bank force-close to these — the actual root cause is the
+		 * ro.lineage.* fingerprint (see E015), NOT the model variants.
+		 * Verified on clean LineageOS: model variants=KB2000 + ro.lineage
+		 * cleared (resetprop) -> CIB works (FirstPageActivity launch),
+		 * Hunter clean. All-consistent KB2000 is better for Hunter. */
 		{ "ro.system.build.type",          "user" },
 		{ "ro.system_ext.build.type",      "user" },
 		{ "ro.vendor.build.type",          "user" },
 		{ "ro.vendor_dlkm.build.type",     "user" },
 		{ "ro.odm.build.type",             "user" },
+		/* Model partition variants: spoof to KB2000 so they match
+		 * ro.product.model (real KB2000). E014 wrongly attributed CIB
+		 * bank force-close to these — actual root cause is the
+		 * ro.lineage.* fingerprint (see E015), NOT the model variants.
+		 * Verified on clean LineageOS + #711: model variants=KB2000 +
+		 * ro.lineage cleared (resetprop) -> CIB works (FirstPageActivity
+		 * launch), Hunter clean. model=KB2000 all-consistent is better
+		 * for Hunter (no device/ROM modified contradiction). */
+		{ "ro.product.system.model",       "KB2000" },
+		{ "ro.product.system_ext.model",   "KB2000" },
+		{ "ro.product.vendor.model",       "KB2000" },
+		{ "ro.product.vendor_dlkm.model",  "KB2000" },
+		{ "ro.product.odm.model",          "KB2000" },
+		{ "ro.product.bootimage.model",    "KB2000" },
 		{ NULL, NULL },
 	};
 	int i;
