@@ -69,7 +69,7 @@ void susfs_schedule_module_move(void)
  *
  * Must run ksud under ksu_cred (ksu domain, permissive): the kworker
  * context is u:r:kernel:s0 which lacks SELinux permission to read
- * /data/adb/* (adb_data_file) and to open /dev/__properties__/* for
+ * files under /data/adb/ and to open /dev/__properties__/ for
  * resetprop. Without override_creds, ksud post-fs-data runs in kernel
  * domain, cannot apply config set_props/delete_props, and cannot exec
  * module post-fs-data.sh — so ro.lineage.* fingerprint props stay
