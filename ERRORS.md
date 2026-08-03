@@ -427,6 +427,42 @@ static int susfs_umh_init(struct subprocess_info *info, struct cred *new) {
 
 ---
 
+### E019：内核构建用 legacy 分支 + inject 脚本 — 内核侧修复必须改 inject 脚本而非 dev 分支源码
+
+**现象**：在 qcxl/KernelSU-Next dev 分支的 `kernel/supercall/supercall.c` 中加了对 `anon_ksu_ioctl` 清除 `susfs_task_state` 的门控（`if (is_manager() || is_ksu_domain() || uid==0)` 才清），但刷入的内核 boot.img **不含该门控**。构建日志显示 `inject-susfs-taskstate.py` 输出 `susfs_task_state clear injected`——注入的是**无条件**清除版本。
+
+**根因**：`build-ksu-debug.yml` 的内核构建**不使用 qcxl/KernelSU-Next dev 分支的内核代码**。它执行：
+```bash
+curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/legacy/kernel/setup.sh" | bash -s legacy
+```
+拉取的是 **rifsxd legacy 分支**，所有定制逻辑通过 build-kernelsu-susfs 的 inject 脚本（sed/python/patch）注入。因此：
+- **userspace / manager 修复**（ksud、APK）→ 改 qcxl dev 分支即可（`build-manager-ci.yml` 用 dev 分支，`ksud.yml` 也 checkout qcxl dev）
+- **内核修复** → **必须改 build-kernelsu-susfs 的 inject 脚本或 kernel-patches**，改 dev 分支内核源码不会进入 boot.img
+
+**修复**：修改 `scripts/inject-susfs-taskstate.py`，注入带门控的版本：
+```c
+/* SUSFS: exempt KSU-authorized processes (manager / uid 0) from path hiding. */
+#ifdef CONFIG_KSU_SUSFS
+    if (is_manager() || current_uid().val == 0)
+        current->susfs_task_state = 0;
+#endif
+```
+并确保 include `<linux/cred.h>`（`current_uid()`）和 `"manager/manager_identity.h"`（`is_manager()`）。同时把脚本加入 `build-ksu-debug.yml` 的 `CCACHE_EXTRAFILES`，否则改 inject 脚本不触发 ccache 失效。
+
+**验证**：
+- 构建日志输出 `gated susfs_task_state clear injected`
+- 本地模拟注入测试：`python3 scripts/inject-susfs-taskstate.py <root>` 后 `grep is_manager <supercall.c>` 命中
+- 刷机后：非授权进程即使拿到 ksu fd 调 GET_INFO 也不清除隐藏位（`/system/bin/su` 对其保持隐藏）
+
+**教训**：
+- 必须先分清"哪条 CI 用哪个分支"：**Manager/ksud CI 用 qcxl dev**；**内核 CI 用 rifsxd legacy + inject**。改错地方 = 修复根本不生效
+- 内核侧任何定制必须落在 build-kernelsu-susfs 的注入链（`scripts/inject-*.py` / `kernel-patches/*.patch`），不能只改上游 fork 的内核源码
+- `CCACHE_EXTRAFILES` 必须覆盖全部 inject 脚本，否则改了脚本但 ccache 命中旧编译结果
+
+**检查清单锚点**：`build-ksu-debug.yml` 的 "Integrate KernelSU-Next" 步骤 + "Inject SUSFS taskstate" 步骤。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |
