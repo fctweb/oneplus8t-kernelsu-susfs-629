@@ -429,7 +429,7 @@ static int susfs_umh_init(struct subprocess_info *info, struct cred *new) {
 
 ### E019：内核构建用 legacy 分支 + inject 脚本 — 内核侧修复必须改 inject 脚本而非 dev 分支源码
 
-**现象**：在 qcxl/KernelSU-Next dev 分支的 `kernel/supercall/supercall.c` 中加了对 `anon_ksu_ioctl` 清除 `susfs_task_state` 的门控（`if (is_manager() || is_ksu_domain() || uid==0)` 才清），但刷入的内核 boot.img **不含该门控**。构建日志显示 `inject-susfs-taskstate.py` 输出 `susfs_task_state clear injected`——注入的是**无条件**清除版本。
+**现象**：在 qcxl/KernelSU-Next dev 分支的 `kernel/supercall/supercall.c` 中加了对 `anon_ksu_ioctl` 清除 `susfs_task_state` 的门控（`if (is_manager() || is_ksu_domain() || uid==0)` 才清），但刷入的内核 boot.img **不含该门控**。构建日志显示 `inject-susfs-taskstate.py` 输出 `susfs_task_state clear injected`——注入的是**无条件**清除版本。且实测当前内核 `is_manager()` 对任意 uid（0/10023/10191/9999/2000）都返回 true（GET_INFO 全带 MANAGER flag），因此门控若依赖 `is_manager()` 会退化为无条件清除。
 
 **根因**：`build-ksu-debug.yml` 的内核构建**不使用 qcxl/KernelSU-Next dev 分支的内核代码**。它执行：
 ```bash
@@ -438,25 +438,30 @@ curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/legacy/kernel/
 拉取的是 **rifsxd legacy 分支**，所有定制逻辑通过 build-kernelsu-susfs 的 inject 脚本（sed/python/patch）注入。因此：
 - **userspace / manager 修复**（ksud、APK）→ 改 qcxl dev 分支即可（`build-manager-ci.yml` 用 dev 分支，`ksud.yml` 也 checkout qcxl dev）
 - **内核修复** → **必须改 build-kernelsu-susfs 的 inject 脚本或 kernel-patches**，改 dev 分支内核源码不会进入 boot.img
+- **`is_manager()` 不可用于内核门控**：本内核构建的 MANAGER flag 对任意 uid 都置位（auto-crown 逻辑），依赖它 = 门控失效
 
-**修复**：修改 `scripts/inject-susfs-taskstate.py`，注入带门控的版本：
+**修复**：修改 `scripts/inject-susfs-taskstate.py`，注入**仅按 uid 0** 门控的版本：
 ```c
-/* SUSFS: exempt KSU-authorized processes (manager / uid 0) from path hiding. */
+/* SUSFS: exempt root processes (uid 0: root shells / ksud commands) from
+ * path hiding. Gated on uid 0 ONLY — is_manager() reports true for every
+ * uid on this build, and arbitrary apps can get the ksu fd via the public
+ * prctl magic. */
 #ifdef CONFIG_KSU_SUSFS
-    if (is_manager() || current_uid().val == 0)
+    if (current_uid().val == 0)
         current->susfs_task_state = 0;
 #endif
 ```
-并确保 include `<linux/cred.h>`（`current_uid()`）和 `"manager/manager_identity.h"`（`is_manager()`）。同时把脚本加入 `build-ksu-debug.yml` 的 `CCACHE_EXTRAFILES`，否则改 inject 脚本不触发 ccache 失效。
+并确保 include `<linux/cred.h>`（`current_uid()`）。manager app（uid 10191）不需要清位：它所有 `/data/adb`、`/system/bin/su` 访问都经 root shell（uid 0），不走自身进程 ioctl。同时把脚本加入 `build-ksu-debug.yml` 的 `CCACHE_EXTRAFILES`。
 
 **验证**：
-- 构建日志输出 `gated susfs_task_state clear injected`
-- 本地模拟注入测试：`python3 scripts/inject-susfs-taskstate.py <root>` 后 `grep is_manager <supercall.c>` 命中
-- 刷机后：非授权进程即使拿到 ksu fd 调 GET_INFO 也不清除隐藏位（`/system/bin/su` 对其保持隐藏）
+- 构建日志输出 `uid-0-gated susfs_task_state clear injected`
+- 本地模拟注入测试：`python3 scripts/inject-susfs-taskstate.py <root>` 后注入内容为 `if (current_uid().val == 0)`
+- 刷机后行为验证：`ksu_flag_test` 用普通 uid（如 9999）拿 fd + ioctl GET_INFO 后，`stat /system/build.prop` 仍为 ENOENT（隐藏未解除）；uid 0 的 ksud 命令仍正常（30ms、可见隐藏路径）
 
 **教训**：
 - 必须先分清"哪条 CI 用哪个分支"：**Manager/ksud CI 用 qcxl dev**；**内核 CI 用 rifsxd legacy + inject**。改错地方 = 修复根本不生效
 - 内核侧任何定制必须落在 build-kernelsu-susfs 的注入链（`scripts/inject-*.py` / `kernel-patches/*.patch`），不能只改上游 fork 的内核源码
+- **内核门控类判定不能依赖 `is_manager()`**——本 build 的 MANAGER flag 对所有 uid 置位；必须用 `current_uid().val == 0` 这类硬判定
 - `CCACHE_EXTRAFILES` 必须覆盖全部 inject 脚本，否则改了脚本但 ccache 命中旧编译结果
 
 **检查清单锚点**：`build-ksu-debug.yml` 的 "Integrate KernelSU-Next" 步骤 + "Inject SUSFS taskstate" 步骤。**标签**：cross-project

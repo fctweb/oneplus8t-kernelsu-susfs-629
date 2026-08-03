@@ -32,15 +32,18 @@ def main():
     # Upstream uses 4-space indentation (NOT tabs)
     old = '    return ksu_supercall_handle_ioctl(cmd, (void __user *)arg);'
     new = (
-        '    /* SUSFS: exempt KSU-authorized processes from path hiding.\n'
-        '     * Clear the hide bit ONLY for the manager app or uid 0 (root\n'
-        '     * shells / ksud commands), so that arbitrary apps which obtain\n'
-        '     * the ksu fd via the public prctl/reboot magic (no uid check in\n'
-        '     * the kprobe handler) cannot clear their own hide bit and then\n'
-        '     * detect hidden root paths (e.g. /system/bin/su) -> bank/\n'
-        '     * Hunter/Momo detection. */\n'
+        '    /* SUSFS: exempt root processes from path hiding so root shells\n'
+        '     * and ksud commands (all uid 0) can see hidden paths. Gated on\n'
+        '     * uid 0 ONLY: is_manager() is unusable here because this kernel\n'
+        '     * build reports the MANAGER flag for every uid (auto-crown),\n'
+        '     * and arbitrary apps can obtain the ksu fd via the public\n'
+        '     * prctl/reboot magic (no uid check). Gating on uid 0 means a\n'
+        '     * non-root app cannot clear its own hide bit and detect hidden\n'
+        '     * root paths (e.g. /system/bin/su) -> bank/Hunter/Momo. The\n'
+        '     * manager app never needs the clear: all its /data/adb and\n'
+        '     * /system/bin/su access goes through the root shell (uid 0). */\n'
         '#ifdef CONFIG_KSU_SUSFS\n'
-        '    if (is_manager() || current_uid().val == 0)\n'
+        '    if (current_uid().val == 0)\n'
         '        current->susfs_task_state = 0;\n'
         '#endif\n'
         '    return ksu_supercall_handle_ioctl(cmd, (void __user *)arg);'
@@ -51,32 +54,18 @@ def main():
         print(f"  Looked for: {repr(old)}")
         sys.exit(0)
 
-    # Ensure the identifiers used by the gated clear are declared.
-    if '#include <linux/cred.h>' not in content:  # current_uid()
+    # Ensure current_uid() is declared.
+    if '#include <linux/cred.h>' not in content:
         content = content.replace(
             '#include <linux/anon_inodes.h>',
             '#include <linux/anon_inodes.h>\n#include <linux/cred.h>',
             1,
         )
-    if '#include "manager/manager_identity.h"' not in content:  # is_manager()
-        # Anchor after an existing KSU include if present, else after cred.h
-        if '#include "arch.h"' in content:
-            content = content.replace(
-                '#include "arch.h"',
-                '#include "arch.h"\n#include "manager/manager_identity.h"',
-                1,
-            )
-        else:
-            content = content.replace(
-                '#include <linux/cred.h>',
-                '#include <linux/cred.h>\n#include "manager/manager_identity.h"',
-                1,
-            )
 
     content = content.replace(old, new, 1)
     with open(path, 'w') as f:
         f.write(content)
-    print(f"  {path}: gated susfs_task_state clear injected")
+    print(f"  {path}: uid-0-gated susfs_task_state clear injected")
 
 if __name__ == '__main__':
     main()
