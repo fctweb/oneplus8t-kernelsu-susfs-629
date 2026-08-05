@@ -468,6 +468,35 @@ curl -LSs "https://raw.githubusercontent.com/rifsxd/KernelSU-Next/legacy/kernel/
 
 ---
 
+### E020：anon_ksu_release 每次 fd 关闭都触发模块 move，install 期间 RENAME_EXCHANGE 破坏模块文件
+
+**现象**：在线安装 ReZygisk 并重启后：zygiskd 未启动，WebUI "Error getting state"、顶部 Unknown、隔 2 秒闪屏，模块 Switch 无法切换。检查发现 `/data/adb/modules/rezygisk/` 只有 `module.prop`+`update`，`post-fs-data.sh`/`webroot/`/`bin/zygiskd64` 全部丢失；完整文件残留在 `modules_update/`（staging）。
+
+**根因**：`supercall.c` 的 `anon_ksu_release()`（每次 ksu fd 关闭时触发）调用 `susfs_apply_module_updates()` 做 staging→active 移动。模块 install 过程中 ksud 进程多次开关 ksu fd → move 执行 1..N 次，与 installer.sh 写入 staging **竞争**。dmesg 实证：
+```
+susfs: move_one 'rezygisk' target not exists err=-2, simple rename   ← 第1次：active 空，直接 rename（active 完整）
+susfs: move_one 'rezygisk' target exists, RENAME_EXCHANGE            ← 第2次：active 已完整，又交换！
+```
+第 2 次 RENAME_EXCHANGE 把完整 active 与半成品 staging 交换 → active 被换走 webroot/bin 等 → 模块损坏。另：重启早期 fscrypt key 未加载时 kernel move 判定 `source stale` 失败（f2fs inline dentry），active 永远不完整。
+
+**修复**：
+- **userspace ksud**（qcxl dev `module.rs`）：`install_module_to_system()` 成功后调用 `handle_updated_modules()`，用 `std::fs::rename` 在用户空间（fscrypt key 已加载、原子）立即完成 staging→active。在线安装后模块**立刻完整可用**，不依赖 kernel move 和重启时序。
+- **kernel**（`supercall.c` / `inject-susfs-module-move.py`）：**移除** `anon_ksu_release` 里的 `susfs_apply_module_updates()` 调用（fd 关闭不再触发 move）。boot 时的 move（`boot_event.c` `susfs_restore_boot`）保留（staging 为空时无害）。
+
+**验证**：
+- `grep -c 'susfs_apply_module_updates' drivers/kernelsu/supercall/supercall.c` → anon_ksu_release 区域为 0
+- 在线安装 ReZygisk 后立即：`/data/adb/modules/rezygisk/webroot`、`bin/zygiskd64` 存在，`modules_update/` 为空
+- 重启后 zygiskd 自动启动，WebUI 无报错、无闪屏
+
+**教训**：
+- **`anon_ksu_release`（fd 关闭 hook）绝不能做有状态的文件移动**——fd 生命周期与业务操作（install）不同步，会在中途反复触发
+- staging→active 移动应放在**业务完成的确定时机**（install/update 结束）由用户空间执行，而非内核 fd 关闭 hook
+- 移动的原子性：用户空间 `std::fs::rename` 可靠；内核 `vfs_rename RENAME_EXCHANGE` 在 f2fs+fscrypt 下受 key 时序影响且交换语义易踩坑
+
+**检查清单锚点**：`supercall.c anon_ksu_release` + `module.rs install_module_to_system` + `inject-susfs-module-move.py`。**标签**：cross-project
+
+---
+
 ## 当前状态（build #335 验证结果）
 
 | 检查项 | 结果 | 说明 |

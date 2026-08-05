@@ -1,13 +1,24 @@
 #!/usr/bin/env python3
-"""Inject susfs_apply_module_updates() into supercall.c + ksud_boot.h
+"""Remove the synchronous module-move hook from anon_ksu_release().
 
-Matches official KernelSU-Next dev branch design:
-  anon_ksu_release() → susfs_apply_module_updates()  [synchronous]
+The kernel-side `susfs_apply_module_updates()` in anon_ksu_release fires on
+EVERY ksu fd close. During a module install the ksud process opens/closes the
+fd multiple times, so the move runs 1..N times while installer.sh is still
+writing staging. The second run hits RENAME_EXCHANGE against a half-written
+staging dir and swaps the (complete) active module out, losing webroot/bin
+etc. → module shows "Error getting state", Unknown, WebUI flash.
+
+Fix: don't move from anon_ksu_release at all. Staging → active is done by
+userspace ksud immediately after install (handle_updated_modules), where the
+fscrypt key is loaded and std::fs::rename is atomic. The boot-time move in
+boot_event.c susfs_restore_boot() stays (harmless when staging is empty).
+
+Keeps the ksud_boot.h declaration so boot_event.c still compiles.
 
 Usage: python3 inject-susfs-module-move.py <kernel-root>
 """
 
-import sys, os
+import sys, os, re
 
 def main():
     if len(sys.argv) < 2:
@@ -18,7 +29,7 @@ def main():
     sc_path = os.path.join(root, "drivers/kernelsu/supercall/supercall.c")
     kh_path = os.path.join(root, "drivers/kernelsu/runtime/ksud_boot.h")
 
-    # 0. Add declarations to ksud_boot.h first so supercall.c can find them
+    # 0. Keep the declarations in ksud_boot.h so boot_event.c still compiles.
     if os.path.exists(kh_path):
         with open(kh_path) as f:
             kh_content = f.read()
@@ -32,7 +43,6 @@ def main():
     else:
         print(f"  WARNING: {kh_path} not found")
 
-    # 1. Modify supercall.c
     if not os.path.exists(sc_path):
         print(f"ERROR: {sc_path} not found")
         sys.exit(1)
@@ -40,52 +50,47 @@ def main():
     with open(sc_path) as f:
         content = f.read()
 
-    if 'susfs_apply_module_updates' in content and 'ksud_boot.h' in content:
-        print("  supercall.c already injected, skipping")
-        return
+    # 1. If the injected block is present, strip it so anon_ksu_release is clean.
+    #    Matches the injected variant (both the plain synchronous one and the
+    #    ksu_cred/current->fs dual-path one).
+    stripped = False
+    # variant A: single susfs_apply_module_updates() call
+    pat_a = re.compile(
+        r'(\tpr_(?:info|debug)\("ksu fd released\\n"\);\n)'
+        r'#ifdef CONFIG_KSU_SUSFS.*?#endif\n'
+        r'\treturn 0;\n\}',
+        re.DOTALL,
+    )
+    if pat_a.search(content):
+        content = pat_a.sub(
+            r'\1\treturn 0;\n}', content,
+        )
+        stripped = True
 
-    # 2. Add includes for cred.h + ksu.h + ksud_boot.h after sulog/event.h
-    old_include = '#include "sulog/event.h"'
-    new_include = old_include + '\n#include <linux/cred.h>\n#include "ksu.h"\n#include "runtime/ksud_boot.h"\n'
-    content = content.replace(old_include, new_include, 1)
+    # variant B: dual-path ksu_cred block
+    pat_b = re.compile(
+        r'(\tpr_(?:info|debug)\("ksu fd released\\n"\);\n)'
+        r'#ifdef CONFIG_KSU_SUSFS.*?}\n#endif\n'
+        r'\treturn 0;\n\}',
+        re.DOTALL,
+    )
+    if pat_b.search(content):
+        content = pat_b.sub(
+            r'\1\treturn 0;\n}', content,
+        )
+        stripped = True
 
-    # 3. Replace anon_ksu_release() — synchronous call, no workqueue.
-    #    __close_fd releases file_lock before calling ->release(), so
-    #    VFS operations (which may sleep) are safe here.
-    old_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
-{
-\tpr_info("ksu fd released\\n");
-\treturn 0;
-}'''
-
-    new_release = '''static int anon_ksu_release(struct inode *inode, struct file *filp)
-{
-\tpr_info("ksu fd released\\n");
-#ifdef CONFIG_KSU_SUSFS
-\t/* Module install just completed — move staging modules to active.
-\t * Dual path: if current->fs is valid (normal close/exit), call
-\t * susfs_apply_module_updates() directly.  If it is NULL (ksud
-\t * unshare or kthread path), defer to the cleanup workqueue
-\t * which runs in kworker context with inherited init fs.
-\t * No override_creds needed — the KSU domain triggers SUSFS
-\t * path hiding that makes kern_path fail on this kernel. */
-\tif (ksu_cred) {
-\t\tif (current->fs) {
-\t\t\tsusfs_apply_module_updates();
-\t\t} else {
-\t\t\tsusfs_schedule_module_move();
-\t\t}
-\t}
-#endif
-\treturn 0;
-}'''
-
-    content = content.replace(old_release, new_release, 1)
+    # 2. Sanity: ensure no susfs_apply_module_updates call remains in anon_ksu_release
+    release_section = content.split('static long anon_ksu_ioctl', 1)[0]
+    if 'susfs_apply_module_updates' in release_section:
+        print(f"  WARNING: susfs_apply_module_updates still present in anon_ksu_release")
+    else:
+        print(f"  anon_ksu_release: clean (no fd-close module move)")
 
     with open(sc_path, 'w') as f:
         f.write(content)
 
-    print(f"  Injected: synchronous susfs_apply_module_updates in anon_ksu_release")
+    print(f"  {sc_path}: removed module-move from anon_ksu_release (staging→active now done by userspace ksud)")
 
 if __name__ == '__main__':
     main()
