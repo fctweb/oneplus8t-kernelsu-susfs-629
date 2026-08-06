@@ -78,10 +78,15 @@ def main():
     subprocess.run(['sh', '-c', f'find . | cpio -o -H newc > {ramdisk_new_cpio}'], check=True)
     print(f"Repacked cpio: {os.path.getsize(ramdisk_new_cpio)} bytes")
 
-    # Re-compress with lz4
-    subprocess.run(['lz4', '-f', ramdisk_new_cpio, output], check=True)
+    # Re-compress with lz4 LEGACY format (0x184C2102 magic) — the bootloader
+    # and kernel's init/ramdisk decompressor expect the legacy framing, NOT
+    # the standard lz4 frame (0x184D2204). Using `lz4 -f` (frame) here made
+    # repacked boot images fail to boot (observed: fastboot boot black screen).
+    subprocess.run(['lz4', '-f', '-l', ramdisk_new_cpio, output], check=True)
     new_size = os.path.getsize(output)
-    print(f"Output ramdisk: {new_size} bytes ({new_size/1024/1024:.1f} MB)")
+    with open(output, 'rb') as f:
+        magic = f.read(4)
+    print(f"Output ramdisk: {new_size} bytes ({new_size/1024/1024:.1f} MB), lz4 magic={magic.hex()} (expect 02214c18)")
 
 if __name__ == '__main__':
     main()
