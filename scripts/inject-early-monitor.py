@@ -108,8 +108,12 @@ def inject_selinux_rule(kernel_root):
 
     rule = (
         "\n"
-        "\t// B2: early ramdisk ReZygisk monitor (/rezygisk-monitor)\n"
-        "\t// exec root -- runs as init domain; allow it to exec the ramdisk file.\n"
+        "\t// B2: early ReZygisk monitor started by `on init` exec root --\n"
+        "\t// (init domain). Monitor lives in /system/bin (system_file) — the\n"
+        "\t// ramdisk/rootfs rules below cover the older ramdisk placement.\n"
+        "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"execute\");\n"
+        "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"read\");\n"
+        "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"open\");\n"
         "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"execute\");\n"
         "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"read\");\n"
         "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"open\");\n"
