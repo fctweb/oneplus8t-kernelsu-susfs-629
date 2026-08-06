@@ -31,15 +31,13 @@ KSU = os.path.join(KERNEL_ROOT, "drivers/kernelsu")
 SCRIPT_MARK = "/* KSU_EARLY_MONITOR_INJECTED */"
 
 # 注入到 KERNEL_SU_RC 的 C 字符串行(放在 "on post-fs-data" 段之前)
-# 诊断版:用 toybox true 验证 init 的 exec 机制本身是否可用。
-#   sys.rezygisk.early=1   → on init 段执行了
-#   sys.rezygisk.execdone=1 → exec 命令成功执行并返回(exec 机制 OK)
-#   execdone 为空            → exec 机制失败(init 的 exec 在 on init 不可用)
+# on init 段:setprop marker 已验证机制(execdone=1);exec 用
+# /system/bin/rezygisk-monitor(monitor 放 /system 而非 ramdisk——本设备
+# system-as-root,ramdisk 在 switch_root 后消失)。
 EARLY_RC_LINES = (
     '    "on init\\n"\n'
     '    "    setprop sys.rezygisk.early 1\\n"\n'
-    '    "    exec root -- /system/bin/toybox true\\n"\n'
-    '    "    setprop sys.rezygisk.execdone 1\\n"\n'
+    '    "    exec root -- /system/bin/rezygisk-monitor monitor\\n"\n'
 )
 
 
@@ -114,18 +112,16 @@ def inject_selinux_rule(kernel_root):
 
     rule = (
         "\n"
-        "\t// B2: early ReZygisk monitor started by `on init` exec root --\n"
-        "\t// (init domain). Monitor lives in /system/bin (system_file) — the\n"
-        "\t// ramdisk/rootfs rules below cover the older ramdisk placement.\n"
+        "\t// B2: early ReZygisk monitor started by `on init` exec root --.\n"
+        "\t// exec root -- has no seclabel => monitor keeps the init domain,\n"
+        "\t// which requires execute_no_trans (not just execute). Monitor\n"
+        "\t// lives in /system/bin (system_file).\n"
+        "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"execute_no_trans\");\n"
         "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"execute\");\n"
         "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"read\");\n"
         "\tksu_allow(db, \"init\", \"system_file\", \"file\", \"open\");\n"
-        "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"execute\");\n"
-        "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"read\");\n"
-        "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"open\");\n"
-        "\tksu_allow(db, \"init\", \"unlabeled\", \"file\", \"execute\");\n"
-        "\tksu_allow(db, \"init\", \"unlabeled\", \"file\", \"read\");\n"
-        "\tksu_allow(db, \"init\", \"unlabeled\", \"file\", \"open\");\n"
+        "\tksu_allow(db, \"init\", \"rootfs\", \"file\", \"execute_no_trans\");\n"
+        "\tksu_allow(db, \"init\", \"unlabeled\", \"file\", \"execute_no_trans\");\n"
         "\t" + SCRIPT_MARK + "\n"
     )
     content = content.replace(anchor, anchor + rule, 1)
