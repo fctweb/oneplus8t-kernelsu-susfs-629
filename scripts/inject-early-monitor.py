@@ -31,9 +31,12 @@ KSU = os.path.join(KERNEL_ROOT, "drivers/kernelsu")
 SCRIPT_MARK = "/* KSU_EARLY_MONITOR_INJECTED */"
 
 # 注入到 KERNEL_SU_RC 的 C 字符串行(放在 "on post-fs-data" 段之前)
+# setprop marker 用于诊断:若开机后 sys.rezygisk.early=1 说明 on init 段
+# 确实被 init 解析执行(否则是注入段解析问题,而非 exec 问题)。
 EARLY_RC_LINES = (
     '    "on init\\n"\n'
-    '    "    exec root -- /rezygisk-monitor monitor\\n"\n'
+    '    "    setprop sys.rezygisk.early 1\\n"\n'
+    '    "    exec root -- /system/bin/rezygisk-monitor monitor\\n"\n'
 )
 
 
