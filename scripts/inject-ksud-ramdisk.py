@@ -1,17 +1,18 @@
 #!/usr/bin/env python3
-"""Inject ksud binary into boot.img ramdisk.
-Usage: python3 inject-ksud-ramdisk.py <ksud_binary> <stock_boot.img> <output_ramdisk.lz4>
+"""Inject ksud binary (+ optional ReZygisk early monitor) into boot.img ramdisk.
+Usage: python3 inject-ksud-ramdisk.py <ksud_binary> <stock_boot.img> <output_ramdisk.lz4> [monitor_binary]
 """
 import struct, os, subprocess, shutil, sys
 
 def main():
     if len(sys.argv) < 4:
-        print("Usage: inject-ksud-ramdisk.py <ksud_binary> <stock_boot.img> <output_ramdisk.lz4>")
+        print("Usage: inject-ksud-ramdisk.py <ksud_binary> <stock_boot.img> <output_ramdisk.lz4> [monitor_binary]")
         sys.exit(1)
 
     ksud_bin = sys.argv[1]
     boot_img = sys.argv[2]
     output = sys.argv[3]
+    monitor_bin = sys.argv[4] if len(sys.argv) > 4 else None
 
     if not os.path.exists(ksud_bin):
         print(f"ERROR: ksud binary not found at {ksud_bin}")
@@ -58,6 +59,16 @@ def main():
     # Copy ksud to ramdisk root (NOT /sbin/ — conflicts with Android symlink)
     shutil.copy2(ksud_bin, 'ksud')
     os.chmod('ksud', 0o755)
+
+    # B2: optional ReZygisk early monitor (libzygisk_ptrace.so). Started by the
+    # kernel-injected `on init` rc section as `/rezygisk-monitor monitor`.
+    if monitor_bin:
+        if not os.path.exists(monitor_bin):
+            print(f"ERROR: monitor binary not found at {monitor_bin}")
+            sys.exit(1)
+        shutil.copy2(monitor_bin, 'rezygisk-monitor')
+        os.chmod('rezygisk-monitor', 0o755)
+        print(f"Added rezygisk-monitor ({os.path.getsize('rezygisk-monitor')} bytes) at ramdisk root")
     print(f"Added ksud ({os.path.getsize('ksud')} bytes) at ramdisk root")
 
     # No su symlink needed — su is handled by overlay /odm/bin/su

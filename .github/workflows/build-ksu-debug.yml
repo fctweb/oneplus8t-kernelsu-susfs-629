@@ -650,6 +650,15 @@ jobs:
           echo "append_module_rc in read_proxy: $(grep -c 'append_module_rc' drivers/kernelsu/runtime/ksud_integration.c 2>/dev/null || echo '0')"
           echo "ksu_no_custom_rc: $(grep -c 'ksu_no_custom_rc' drivers/kernelsu/core/init.c 2>/dev/null || echo '0')"
 
+      - name: Inject early ReZygisk monitor (on-init, B2)
+        working-directory: kernel
+        run: |
+          echo "=== Injecting early ReZygisk monitor (on-init) ==="
+          python3 ../scripts/inject-early-monitor.py .
+          echo "=== Verification ==="
+          echo "on-init rc: $(grep -c 'rezygisk-monitor monitor' drivers/kernelsu/runtime/ksud_integration.c 2>/dev/null || echo '0')"
+          echo "sepolicy rootfs exec: $(grep -c 'KSU_EARLY_MONITOR_INJECTED' drivers/kernelsu/selinux/rules.c 2>/dev/null || echo '0')"
+
       - name: Inject allow_shell module param
         working-directory: kernel
         run: |
@@ -822,12 +831,24 @@ jobs:
             chmod 755 /tmp/ksud-ramdisk
             echo "ksud binary: $(stat -c%s /tmp/ksud-ramdisk) bytes"
 
+            # B2: ReZygisk early monitor (libzygisk_ptrace.so) for on-init start
+            MONITOR_BIN="prebuilt/rezygisk-monitor"
+            RAMDISK_MONITOR_ARG=""
+            if [ -f "$MONITOR_BIN" ]; then
+                cp "$MONITOR_BIN" /tmp/rezygisk-monitor-ramdisk
+                chmod 755 /tmp/rezygisk-monitor-ramdisk
+                RAMDISK_MONITOR_ARG="/tmp/rezygisk-monitor-ramdisk"
+                echo "rezygisk-monitor binary: $(stat -c%s /tmp/rezygisk-monitor-ramdisk) bytes"
+            else
+                echo "WARNING: prebuilt/rezygisk-monitor not found — early monitor NOT embedded"
+            fi
+
             echo "=== Downloading stock boot.img ==="
             curl -fSL -o /tmp/stock-boot.img \
               "https://github.com/qcxl/oneplus8t-kernelsu-susfs-629/releases/download/v1-original-boot/boot.img"
 
             echo "=== Extracting and modifying ramdisk ==="
-            python3 scripts/inject-ksud-ramdisk.py /tmp/ksud-ramdisk /tmp/stock-boot.img /tmp/ramdisk-new.lz4
+            python3 scripts/inject-ksud-ramdisk.py /tmp/ksud-ramdisk /tmp/stock-boot.img /tmp/ramdisk-new.lz4 "$RAMDISK_MONITOR_ARG"
             echo "Ramdisk injection complete, saved to /tmp/ramdisk-new.lz4"
 
             echo "=== Verifying ksud in ramdisk ==="
@@ -839,6 +860,12 @@ jobs:
             else
                 echo "  ❌ /ksud NOT in ramdisk — build will fail!"
                 exit 1
+            fi
+            MON=$(cpio -it -F /tmp/ramdisk-verify.raw 2>/dev/null | grep -E '^rezygisk-monitor$')
+            if [ -n "$MON" ]; then
+                echo "  ✅ /rezygisk-monitor found in ramdisk"
+            else
+                echo "  ⚠️ /rezygisk-monitor NOT in ramdisk"
             fi
             echo "SKIP_RAMDISK=0" >> $GITHUB_ENV
 
@@ -855,15 +882,17 @@ jobs:
             cp build-boot-img.py artifact/
 
             # Reuse stock boot.img from ramdisk step (already downloaded to /tmp/stock-boot.img)
-            # Build boot.img (ramdisk injection disabled — repack unstable)
-            # RAMDISK_OPT=""
-            # if [ "$SKIP_RAMDISK" != "1" ] && [ -f "/tmp/ramdisk-new.lz4" ]; then
-            #     RAMDISK_OPT="--ramdisk-file /tmp/ramdisk-new.lz4"
-            # fi
+            # Build boot.img (ramdisk injection for B2 early monitor)
+            RAMDISK_OPT=""
+            if [ "$SKIP_RAMDISK" != "1" ] && [ -f "/tmp/ramdisk-new.lz4" ]; then
+                RAMDISK_OPT="--ramdisk-file /tmp/ramdisk-new.lz4"
+                echo "Using injected ramdisk (ksud + rezygisk-monitor)"
+            fi
 
             python3 build-boot-img.py /tmp/stock-boot.img \
               kernel/out/arch/arm64/boot/Image \
               artifact/debug-boot.img \
+              $RAMDISK_OPT \
               --append-cmdline "initcall_debug log_buf_len=16M keep_bootcon ignore_loglevel no_console_suspend"
 
             # KSU boot.img (with KSU+SUSFS)
