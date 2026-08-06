@@ -31,16 +31,22 @@ KSU = os.path.join(KERNEL_ROOT, "drivers/kernelsu")
 SCRIPT_MARK = "/* KSU_EARLY_MONITOR_INJECTED */"
 
 # 注入到 KERNEL_SU_RC 的 C 字符串行(放在 "on post-fs-data" 段之前)
-# on init 段:setprop marker 已验证机制(execdone=1);exec 用
-# /system/bin/rezygisk-monitor(monitor 放 /system 而非 ramdisk——本设备
-# system-as-root,ramdisk 在 switch_root 后消失)。
-# monitor 以 u:r:su:s0 运行(手动验证 su 域能完整注入:seize init + socket
-# + zygiskd + libzygisk;而继承 init 域时 monitor 启动即静默退出,且
-# exec root -- 需要 execute_no_trans 也不可靠)。
+#
+# 关键教训(实测):`on init` 段的 exec 是【阻塞】命令——长驻 monitor 会让
+# init 卡在 exec 段,导致 vold/zygote 延迟 ~120s,/data 就绪也被推迟,
+# monitor 等 /data 反而超时退出(恶性循环,zygote 拖到 124.9s)。
+# 因此改用 service 段(init 后台启动,不阻塞)+ on init 段 `start`。
+# monitor 以 u:r:su:s0 运行(手动验证 su 域能完整注入;init 域会静默退出)。
 EARLY_RC_LINES = (
     '    "on init\\n"\n'
     '    "    setprop sys.rezygisk.early 1\\n"\n'
-    '    "    exec u:r:su:s0 root -- /system/bin/rezygisk-monitor monitor\\n"\n'
+    '    "    start rezygisk\\n"\n'
+    '    "\\n"\n'
+    '    "service rezygisk /system/bin/rezygisk-monitor monitor\\n"\n'
+    '    "    class core\\n"\n'
+    '    "    user root\\n"\n'
+    '    "    seclabel u:r:su:s0\\n"\n'
+    '    "    oneshot\\n"\n'
 )
 
 
