@@ -1,10 +1,10 @@
-diff --git a/drivers/kernelsu/selinux/selinux.c b/drivers/kernelsu/selinux/selinux.c
---- a/drivers/kernelsu/selinux/selinux.c
-+++ b/drivers/kernelsu/selinux/selinux.c
-@@ -45,6 +45,7 @@
-	if (!error) {
-		tsec->sid = sid;
-+		tsec->exec_sid = sid;
-		tsec->create_sid = 0;
-		tsec->keycreate_sid = 0;
-		tsec->sockcreate_sid = 0;
+--- /tmp/selinux_orig.c	2026-08-02 20:57:47
++++ /tmp/selinux_new.c	2026-08-02 20:57:47
+@@ -44,6 +44,7 @@
+     if (!error) {
+         tsec->sid = sid;
+         tsec->create_sid = 0;
++        tsec->exec_sid = sid;
+         tsec->keycreate_sid = 0;
+         tsec->sockcreate_sid = 0;
+ 		if (clear_exec_sid) {

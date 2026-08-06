@@ -1,0 +1,6 @@
+id=rezygisk-selfheal
+name=ReZygisk Self-Heal (验证版)
+version=v0.1
+versionCode=1
+author=qcxl
+description=开机自动检测 ReZygisk 注入状态,错过 zygote 时自动重启一次 zygote 完成注入。验证版。

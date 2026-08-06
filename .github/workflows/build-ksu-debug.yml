@@ -741,6 +741,11 @@ jobs:
           # 5. Resolve all config dependencies
           make O=out ARCH=arm64 $CFG olddefconfig
 
+          # 5b. Force clean kernel version string in /proc/version:
+          # setlocalversion greps .config directly (make CLI args don't stick),
+          # so bake AUTO=n + empty LOCALVERSION into the file itself.
+          sed -i 's/^CONFIG_LOCALVERSION_AUTO=y/CONFIG_LOCALVERSION_AUTO=n/; s/^CONFIG_LOCALVERSION="[^"]*"/CONFIG_LOCALVERSION=""/' out/.config
+
           echo "=== Config ready ==="
           grep -E "CONFIG_KSU=|CONFIG_KSU_SUSFS=|CONFIG_RAMOOPS=|CONFIG_PSTORE_RAM=|CONFIG_KPM=" out/.config
           echo "SUSFS options:"
