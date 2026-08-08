@@ -266,7 +266,12 @@ static int my_setprocattr(const char *name, void *value, size_t size)
 	    current_uid().val != ksu_get_manager_appid()) {
 		if (name && !strcmp(name, "current")) {
 			if (value && buf_mentions_ksu((const char *)value, size))
-				return -EACCES;
+				/* Anti-detection: mirror a kernel with NO ksu domain.
+				 * setcon("u:r:ksu:s0") on stock returns -EINVAL (type
+				 * unknown); returning -EACCES here leaks "domain
+				 * exists but denied" — detectors (luna SelinuxContext
+				 * Oracle) distinguish the two and report ksuDomain=yes. */
+				return -EINVAL;
 		}
 	}
 	if (unlikely(!orig_setprocattr))
