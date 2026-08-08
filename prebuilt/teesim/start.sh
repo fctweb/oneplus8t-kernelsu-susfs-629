@@ -30,6 +30,11 @@ chmod 644 /data/adb/tricky_store/target.txt /data/adb/tricky_store/keybox.xml 2>
 #    额外好处:普通 App 域无法读取 system_file 标签的 /data 文件,更隐蔽
 chcon -R u:object_r:system_file:s0 /data/local/teesim/ 2>/dev/null
 
+# 3.5 SELinux Hide:对 app UID 的 /sys/fs/selinux 访问做 sanitize(隐藏 ksu 域/
+#     规则——检测器如 luna 的 SelinuxContextOracle 会通过 live policy 发现
+#     "KSU context",此功能可消除;toggle 内存级,每次开机需重新启用)
+/data/adb/ksud feature set 4 1 2>/dev/null
+
 # 4. 守护循环:App(comm=TEESimulator)不在则启动;每 30s 检查
 #    ★ 检测用 ps | grep -c(可靠,无 awk 兼容问题);不能用 pgrep -f/-x
 #      (toybox 行为异常,匹配到 sh 包装导致无限拉起)也不能用 awk if()
