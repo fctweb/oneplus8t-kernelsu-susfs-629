@@ -5,15 +5,16 @@ inject-teesim.py — TEESimulator 固化(方案 Y):开机自动启动 TEESimulat
 背景(OnePlus8T / kebab, LineageOS 20 + KSU-Next + SUSFS):
   - TEESimulator 需要注入 keystore2 进程 + Java App 常驻,才能模拟
     硬件密钥认证(修复 Momo "TEE 损坏"、银行 App 检测)
-  - 方案 Y = 完全固化到内核:
+  - 方案 Y = 内核注入开机启动 + /data 文件(OnePlus 8T system-as-root 切根后
+    ramdisk 释放,文件必须放 /data/local/teesim,刷机后一键部署一次):
       1. teesim 文件(classes.dex / libTEESimulator.so / inject /
-         keybox.xml / target.txt / resetprop / start.sh)打包进
-         boot.img ramdisk 的 /teesim/ 目录(见 inject-ksud-ramdisk.py)
+         keybox.xml / target.txt / resetprop / start.sh)放在
+         /data/local/teesim/(刷机流程中的部署步骤)
       2. KERNEL_SU_RC 注入 `on post-fs-data` 段 start teesim service,
-         service 以 u:r:su:s0 运行 /teesim/start.sh
+         service 以 u:r:su:s0 运行 /data/local/teesim/start.sh
       3. start.sh 等待 sys.boot_completed=1 后:
          - 复制 target.txt/keybox.xml → /data/adb/tricky_store(硬编码路径)
-         - chcon /teesim/* 为 adb_data_file(keystore 域可读 ramdisk 文件)
+         - chcon /data/local/teesim/* 为 adb_data_file(keystore 域可读)
          - ksud sepolicy patch 2 条(keystore 读 adb_data_file/shell_data_file)
          - 守护循环:启动 TEESimulator App,死亡自动重启
   参考:inject-early-monitor.py(B2 ReZygisk 同款注入框架)
@@ -45,7 +46,7 @@ TEESIM_RC_LINES = (
     '    "    setprop sys.teesim.started 1\\n"\n'
     '    "    start teesim\\n"\n'
     '    "\\n"\n'
-    '    "service teesim /system/bin/sh /teesim/start.sh\\n"\n'
+    '    "service teesim /system/bin/sh /data/local/teesim/start.sh\\n"\n'
     '    "    class core\\n"\n'
     '    "    user root\\n"\n'
     '    "    seclabel u:r:su:s0\\n"\n'
