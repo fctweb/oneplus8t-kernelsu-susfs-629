@@ -200,8 +200,11 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
         return 1;
     }
 
-    printk(KERN_INFO "ksu_prctl: unknown arg2=%lu pid=%d\\n", arg2, current->pid);
-    return 0;
+    /* Anti-detection: prctl(0xDEADBEEF, <random>, ...) is how root-detectors
+     * probe for a KSU prctl hook. A plain kernel's prctl returns -EINVAL for
+     * the unknown option, so we must mirror that exactly: return -EINVAL and
+     * print NOTHING (the kmsg log line was itself observable via logcat). */
+    return -EINVAL;
 }
 EXPORT_SYMBOL(ksu_handle_prctl);
 '''
