@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Inject ksud binary (+ optional ReZygisk early monitor) into boot.img ramdisk.
-Usage: python3 inject-ksud-ramdisk.py <ksud_binary> <stock_boot.img> <output_ramdisk.lz4> [monitor_binary]
+"""Inject ksud binary (+ optional ReZygisk early monitor / TEESimulator dir) into boot.img ramdisk.
+Usage: python3 inject-ksud-ramdisk.py <ksud_binary> <stock_boot.img> <output_ramdisk.lz4> [monitor_binary] [teesim_dir]
 """
 import struct, os, subprocess, shutil, sys
 
@@ -13,6 +13,7 @@ def main():
     boot_img = sys.argv[2]
     output = sys.argv[3]
     monitor_bin = sys.argv[4] if len(sys.argv) > 4 else None
+    teesim_dir = sys.argv[5] if len(sys.argv) > 5 else None
 
     if not os.path.exists(ksud_bin):
         print(f"ERROR: ksud binary not found at {ksud_bin}")
@@ -72,6 +73,23 @@ def main():
     print(f"Added ksud ({os.path.getsize('ksud')} bytes) at ramdisk root")
 
     # No su symlink needed — su is handled by overlay /odm/bin/su
+
+    # Y: TEESimulator ramdisk payload (classes.dex / libTEESimulator.so /
+    # inject / keybox.xml / target.txt / resetprop / start.sh) → /teesim/.
+    # start.sh (kernel-injected `on post-fs-data` start teesim service) copies
+    # config to /data/adb/tricky_store, chcon to adb_data_file (keystore
+    # domain readable), patches sepolicy, then daemonizes the App.
+    if teesim_dir:
+        if not os.path.isdir(teesim_dir):
+            print(f"ERROR: teesim dir not found at {teesim_dir}")
+            sys.exit(1)
+        shutil.copytree(teesim_dir, 'teesim')
+        for root, dirs, files in os.walk('teesim'):
+            for d in dirs:
+                os.chmod(os.path.join(root, d), 0o755)
+            for fn in files:
+                os.chmod(os.path.join(root, fn), 0o755)
+        print(f"Added /teesim/ ({sum(len(f) for _,_,f in os.walk('teesim'))} files) at ramdisk root")
 
     # Repack cpio
     ramdisk_new_cpio = '/tmp/ramdisk-new.cpio'

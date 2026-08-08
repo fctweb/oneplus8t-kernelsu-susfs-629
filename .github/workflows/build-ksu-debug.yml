@@ -659,6 +659,15 @@ jobs:
           echo "on-init rc: $(grep -c 'rezygisk-monitor monitor' drivers/kernelsu/runtime/ksud_integration.c 2>/dev/null || echo '0')"
           echo "sepolicy rootfs exec: $(grep -c 'KSU_EARLY_MONITOR_INJECTED' drivers/kernelsu/selinux/rules.c 2>/dev/null || echo '0')"
 
+      - name: Inject TEESimulator (plan Y, ramdisk boot-start)
+        working-directory: kernel
+        run: |
+          echo "=== Injecting TEESimulator (on-post-fs-data start teesim) ==="
+          python3 ../scripts/inject-teesim.py .
+          echo "=== Verification ==="
+          echo "teesim rc: $(grep -c 'service teesim' drivers/kernelsu/runtime/ksud_integration.c 2>/dev/null || echo '0')"
+          echo "sepolicy su rootfs: $(grep -c 'KSU_TEESIM_INJECTED' drivers/kernelsu/selinux/rules.c 2>/dev/null || echo '0')"
+
       - name: Inject allow_shell module param
         working-directory: kernel
         run: |
@@ -853,8 +862,20 @@ jobs:
               "https://github.com/qcxl/oneplus8t-kernelsu-susfs-629/releases/download/v1-original-boot/boot.img"
 
             echo "=== Extracting and modifying ramdisk ==="
-            python3 scripts/inject-ksud-ramdisk.py /tmp/ksud-ramdisk /tmp/stock-boot.img /tmp/ramdisk-new.lz4 "$RAMDISK_MONITOR_ARG"
+            TEESIM_DIR="$GITHUB_WORKSPACE/prebuilt/teesim"
+            if [ -d "$TEESIM_DIR" ]; then
+                echo "TEESimulator payload dir found: $(ls $TEESIM_DIR)"
+            else
+                echo "WARNING: $TEESIM_DIR not found — TEESimulator NOT embedded"
+            fi
+            python3 scripts/inject-ksud-ramdisk.py /tmp/ksud-ramdisk /tmp/stock-boot.img /tmp/ramdisk-new.lz4 "$RAMDISK_MONITOR_ARG" "$TEESIM_DIR"
             echo "Ramdisk injection complete, saved to /tmp/ramdisk-new.lz4"
+
+            echo "=== Verifying TEESimulator in ramdisk ==="
+            lz4 -d /tmp/ramdisk-new.lz4 /tmp/ramdisk-verify2.raw 2>/dev/null
+            TEE_DEX=$(cpio -it -F /tmp/ramdisk-verify2.raw 2>/dev/null | grep -c '^teesim/classes.dex$')
+            TEE_SH=$(cpio -it -F /tmp/ramdisk-verify2.raw 2>/dev/null | grep -c '^teesim/start.sh$')
+            echo "  teesim/classes.dex: $TEE_DEX  teesim/start.sh: $TEE_SH"
 
             echo "=== Verifying ksud in ramdisk ==="
             # Decompress and check /ksud exists with correct size

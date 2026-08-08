@@ -1,0 +1,4 @@
+#!/system/bin/sh
+# resetprop 包装:TEESimulator App 调用 resetprop 设置 ro.* 属性(补丁级别等)
+# 通过 PATH(/teesim)被找到;实际转发给 ksud 的 Magisk 兼容 resetprop
+exec /data/adb/ksud resetprop "$@"
