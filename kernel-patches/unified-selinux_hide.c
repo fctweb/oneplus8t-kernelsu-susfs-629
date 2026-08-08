@@ -229,7 +229,13 @@ static ssize_t my_write_context(struct file *file, const char *buf, size_t size)
 	    current_uid().val >= 10000 &&
 	    current_uid().val != ksu_get_manager_appid()) {
 		if (buf_mentions_ksu(buf, size)) {
-			return size;
+			/* Anti-detection: mirror a kernel with NO ksu domain.
+			 * Returning the write size (fake success) leaks "domain exists
+			 * and setcon succeeded" — Native Check's access oracle and
+			 * context-oracle (detectSelinuxAccessOracleAnomaly) treat a
+			 * successful reply as ksuDomain=yes. -EINVAL matches a kernel
+			 * where the ksu type is unknown, same as my_setprocattr. */
+			return -EINVAL;
 		}
 	}
 	if (unlikely(!orig_context_write))
@@ -246,9 +252,12 @@ static ssize_t my_write_access(struct file *file, const char *buf, size_t size)
 	    current_uid().val >= 10000 &&
 	    current_uid().val != ksu_get_manager_appid()) {
 		if (buf_mentions_ksu(buf, size)) {
-			return scnprintf((char *)buf, SIMPLE_TRANSACTION_LIMIT,
-					 "%x %x %x %x %u %x",
-					 0, 0xffffffff, 0, 0xffffffff, 0, 0);
+			/* Anti-detection: mirror a kernel with NO ksu domain.
+			 * Returning an all-allow av decision leaks "domain exists and
+			 * is queryable" (Native Check detectSelinuxAccessOracleAnomaly
+			 * hits on it). -EINVAL mirrors "scontext unknown", same as
+			 * my_setprocattr / my_write_context. */
+			return -EINVAL;
 		}
 	}
 	if (unlikely(!orig_access_write))
@@ -264,13 +273,20 @@ static int my_setprocattr(const char *name, void *value, size_t size)
 	    ksu_selinux_hide_running &&
 	    current_uid().val >= 10000 &&
 	    current_uid().val != ksu_get_manager_appid()) {
-		if (name && !strcmp(name, "current")) {
+		if (name && (!strcmp(name, "current") ||
+			     !strcmp(name, "exec") ||
+			     !strcmp(name, "prev") ||
+			     !strcmp(name, "fscreate") ||
+			     !strcmp(name, "keycreate") ||
+			     !strcmp(name, "sockcreate"))) {
 			if (value && buf_mentions_ksu((const char *)value, size))
 				/* Anti-detection: mirror a kernel with NO ksu domain.
 				 * setcon("u:r:ksu:s0") on stock returns -EINVAL (type
 				 * unknown); returning -EACCES here leaks "domain
 				 * exists but denied" — detectors (luna SelinuxContext
-				 * Oracle) distinguish the two and report ksuDomain=yes. */
+				 * Oracle) distinguish the two and report ksuDomain=yes.
+				 * Cover every procattr name, not just "current":
+				 * detectors may probe setexeccon (attr/exec) etc. */
 				return -EINVAL;
 		}
 	}
