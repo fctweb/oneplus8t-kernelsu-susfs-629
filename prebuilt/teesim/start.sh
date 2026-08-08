@@ -16,14 +16,11 @@ cp -f /data/local/teesim/target.txt /data/adb/tricky_store/target.txt 2>/dev/nul
 cp -f /data/local/teesim/keybox.xml /data/adb/tricky_store/keybox.xml 2>/dev/null
 chmod 644 /data/adb/tricky_store/target.txt /data/adb/tricky_store/keybox.xml 2>/dev/null
 
-# 3. ramdisk 文件标签 → adb_data_file(keystore 域可读注入的 so;每次开机 chcon)
+# 3. 文件标签 → adb_data_file(keystore 域可读注入的 so;编译期内核已含
+#    keystore 读 adb_data_file 规则,无需运行时 sepolicy patch)
 chcon -R u:object_r:adb_data_file:s0 /data/local/teesim/ 2>/dev/null
 
-# 4. sepolicy 规则(内存级,每次开机重新 patch;file 类规则实测安全)
-/data/adb/ksud sepolicy patch "allow keystore adb_data_file file *" 2>/dev/null
-/data/adb/ksud sepolicy patch "allow keystore shell_data_file file *" 2>/dev/null
-
-# 5. 守护循环:App 不在则启动;每 30s 检查(keystore2 重启 → App 自杀 → 自动拉起)
+# 4. 守护循环:App 不在则启动;每 30s 检查(keystore2 重启 → App 自杀 → 自动拉起)
 while true; do
     if ! pgrep -f "org.matrix.TEESimulator.App" >/dev/null 2>&1; then
         cd /data/local/teesim && PATH=/data/local/teesim:$PATH nohup /system/bin/app_process \
