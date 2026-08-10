@@ -1,0 +1,13 @@
+diff --git a/drivers/soc/qcom/socinfo.c b/drivers/soc/qcom/socinfo.c
+index b8f9e83ebe..16ca50e819 100644
+--- a/drivers/soc/qcom/socinfo.c
++++ b/drivers/soc/qcom/socinfo.c
+@@ -550,7 +550,7 @@ char *socinfo_get_build_id(void)
+ 
+ static char *msm_read_hardware_id(void)
+ {
+-	static char msm_soc_str[256] = "Qualcomm Technologies, Inc ";
++	static char msm_soc_str[256] = "qcom ";
+ 	static bool string_generated;
+ 	int ret = 0;
+ 

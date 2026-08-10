@@ -98,6 +98,7 @@ jobs:
         run: |
           patch -p1 --forward --fuzz=3 < ../kernel-patches/fix_strnstr_msm_drv.patch || echo "WARNING: fix_strnstr_msm_drv.patch failed (may already be applied)"
           patch -p1 --forward --fuzz=3 < ../kernel-patches/fix_dtb_no_qcom.patch || echo "WARNING: fix_dtb_no_qcom.patch failed (may already be applied)"
+          patch -p1 --forward --fuzz=3 < ../kernel-patches/fix_cpuinfo_hardware_qcom.patch || echo "WARNING: fix_cpuinfo_hardware_qcom.patch failed (may already be applied)"
           echo "=== Patches applied ==="
 
       - name: Install KSU fd hook in init/main.c
