@@ -777,8 +777,10 @@ jobs:
           # Spoof kernel build identity in /proc/version (banks check this):
           # official-style user@host, fixed official build timestamp, no
           # -g<hash>-dirty suffix (CI injects source changes => dirty tree).
-          export KBUILD_BUILD_USER=buildbot
-          export KBUILD_BUILD_HOST=lineageos
+          # AOSP google identity — detector tools flag 'buildbot@lineageos'
+          # (custom ROM) and '-perf'; google.com reads as stock AOSP.
+          export KBUILD_BUILD_USER=android-build
+          export KBUILD_BUILD_HOST=google.com
           export KBUILD_BUILD_TIMESTAMP="Fri Feb 9 00:58:10 UTC 2024"
           # Cache buster: change this env var to force ccache miss on any workflow/config change
           export CCACHE_EXTRAFILES="../../.github/workflows/build-ksu-debug.yml:../../kernel-patches/ksu.config:../../kernel-patches/debug.config:../../kernel-patches/unified-selinux_hide.c:../../scripts/inject-susfs-dispatch.py:../../scripts/inject-susfs-sus-map.py:../../scripts/inject-v2-features-batch1.py:../../scripts/inject-v2-features-batch2.py:../../scripts/inject-initrc.py:../../scripts/inject-allow-shell.py:../../scripts/inject-susfs-sdcard-monitor.py:../../scripts/inject-escape-root-clear-state.py:../../scripts/inject-fork-susfs-whitelist.py:../../scripts/inject-susfs-taskstate.py:../../build-boot-img.py"

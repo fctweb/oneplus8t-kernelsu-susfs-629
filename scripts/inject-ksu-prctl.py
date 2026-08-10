@@ -180,10 +180,15 @@ int ksu_handle_prctl(int option, unsigned long arg2, unsigned long arg3,
 
     if (arg2 == 2) {
         uid_t uid = current_uid().val % KSU_PER_USER_RANGE;
-        printk(KERN_INFO "ksu_prctl: get_info pid=%d uid=%d mgr=%d\\n",
-               current->pid, uid, ksu_get_manager_appid());
+        /* Anti-detection: prctl(0xDEADBEEF, 2) is how root-detectors probe
+         * for a KSU get_info hook (Duck Detector: "prctl(0xDEADBEEF, 2)
+         * returned KernelSU version"). A plain kernel returns -EINVAL for
+         * the unknown option. Only the registered manager (KSUN App) gets
+         * the version; everyone else mirrors the stock kernel (-EINVAL).
+         * NOTE: the old unconditional ksu_set_manager_appid() auto-register
+         * is REMOVED — it let ANY app probe itself into manager status. */
         if (ksu_get_manager_appid() != uid) {
-            ksu_set_manager_appid(uid);
+            return -EINVAL;
         }
 
         u32 __user *version_ptr = (u32 __user *)arg3;
