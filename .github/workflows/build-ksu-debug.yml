@@ -242,6 +242,17 @@ jobs:
           grep -c 'uapi_version = KERNEL_SU_UAPI_VERSION' drivers/kernelsu/supercall/dispatch.c 2>/dev/null || echo "0"
            grep -c 'GET_INFO_LEGACY' drivers/kernelsu/supercall/dispatch.c 2>/dev/null || echo "0"
 
+      - name: Patch linux_banner @ separator (anti maintainer-style @-mentions)
+        working-directory: kernel
+        run: |
+          echo "=== Replacing '@' with '.' between COMPILE_BY/HOST in linux_banner ==="
+          echo "  before:"
+          grep -n 'LINUX_COMPILE_BY' init/version.c | head -2
+          sed -i 's/LINUX_COMPILE_BY "@"/LINUX_COMPILE_BY "."/' init/version.c
+          echo "  after:"
+          grep -n 'LINUX_COMPILE_BY' init/version.c | head -2
+          echo "  (Kernel identity becomes '(android-build.google.com)' — no @ mention.)"
+
       - name: Auto-crown manager by package name (KSU_MANAGER_PACKAGE)
         working-directory: kernel
         run: |
