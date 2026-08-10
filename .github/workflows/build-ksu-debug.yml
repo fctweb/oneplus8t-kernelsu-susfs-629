@@ -795,7 +795,7 @@ jobs:
 
           make -j"$(nproc --all)" O=out ARCH=arm64 \
             CONFIG_LOCALVERSION_AUTO=n \
-            LOCALVERSION=-perf \
+            LOCALVERSION= \
             CC=clang \
             LD=ld.lld \
             AR=llvm-ar \
