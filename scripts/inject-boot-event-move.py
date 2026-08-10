@@ -171,10 +171,13 @@ static void susfs_restore_boot(void)
 		static const char * const maps[] = { "/data/adb/", NULL };
 		for (i = 0; maps[i]; i++) susfs_mark_inode_sus_map(maps[i]);
 	}
-	{
-		static const char * const mounts[] = { "/vendor", "/odm", NULL };
-		for (i = 0; mounts[i]; i++) susfs_add_sus_mount_kernel(mounts[i]);
-	}
+	/* NOTE: Do NOT add /vendor /odm to sus_mounts here (removed 2026-08-10).
+	 * Hiding their mount records from mountinfo makes mount-gap scanners
+	 * (e.g. 春秋 Native Check "挂载间隙") flag the device: the dirs exist
+	 * (st_dev differs from /) but no mount record is visible in
+	 * /proc/self/mountinfo. On stock LineageOS these are normal mounts,
+	 * so leaving them visible is the clean/stock state. Do not re-add
+	 * without re-testing Native Check + bank apps. */
 
 	susfs_set_uname_kernel("4.19.304", "#1 SMP PREEMPT Fri Feb 9 00:58:10 UTC 2024");
 
@@ -182,7 +185,9 @@ static void susfs_restore_boot(void)
 	susfs_set_log(false);
 #endif
 #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
-	WRITE_ONCE(susfs_hide_sus_mnts_for_all_procs, true);
+	/* Do NOT force-hide SUS mounts for all procs: with no sus_mount
+	 * entries added this is a no-op, and forcing it true only risks
+	 * hiding legit /vendor /odm mounts from mountinfo-based scanners. */
 #endif
 #ifdef CONFIG_KSU_SUSFS_ENABLE_AVC_LOG_SPOOFING
 	WRITE_ONCE(susfs_is_avc_log_spoofing_enabled, true);
