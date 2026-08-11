@@ -331,3 +331,137 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 3. **Runtime.exec 不构成绕过**——命令读伪装数据——**唯一缺口 ps(进程列表)**
 4. **真实漏洞 4 项**:Build 缓存时机 / MAC / 进程列表 / 原始 syscall 验证——**均为内核 patch 可解**
 5. **Binder 层(应用列表/虚拟定位/传感器)免 Zygisk 无解**——但 IMEI 已被权限保护,其余检测器实际使用率低
+
+---
+
+## 十、深挖:检测器实测路径 + 获取机制全集(穷尽)
+
+### 10.1 已逆向检测器实际读取的路径(实测证据)
+
+> 统计自 luna/小骨/来富/Duck Detector 解码源码 + 设备实测。
+
+| 检测器 | 读取路径 | 设备实测状态 | 判定 |
+|---|---|---|---|
+| 小骨 | `/system/bin/su` `/system/xbin/su` `/system/sd/xbin/su` `/system/bin/failsafe/su` `/data/local/xbin/su` `/vendor/bin/su` `/system/sbin/su` | **全部 ENOENT**(su 文件已删 + sus_paths 隐藏) | ✅ 安全 |
+| 小骨 | `/proc/self/status`(TracerPid) | 无调试器,TracerPid=0 | ✅ |
+| 小骨 | `/proc/self/environ` | 无 LD_PRELOAD 注入,干净 | ✅ |
+| 小骨 | `/proc/self/attr/current`(SELinux 域) | App=`untrusted_app`(正常,非 ksu 域) | ✅ |
+| 小骨 | `/proc/version` `/proc/cpuinfo` | 已伪装/已修 | ✅ |
+| 小骨 | `/dev/qemu_pipe`(模拟器) | 不存在 | ✅ |
+| 小骨 | `/data/misc/profiles/cur/0`(JIT) | 232 个(正常设备) | ✅ |
+| luna | `/proc/self/fd/` `/proc/self/attr/prev` | 干净(无注入 fd) | ✅ |
+| 来富 | `/system/lib/libc.so`(壳) | — | ✅ |
+
+**结论**:检测器枚举的路径**大部分天然不存在或干净**——SUSFS 未覆盖的"新路径"实测均不构成威胁。
+
+### 10.2 Android App 获取设备信息机制全集(穷尽清单)
+
+> 每个机制:数据源 / 反射或命令可绕过 / SUSFS 覆盖状态。
+
+**A. 属性/构建层**
+| 机制 | 数据源 | 绕过 | SUSFS |
+|---|---|---|---|
+| `SystemProperties.get`(Java/反射) | 属性存储 | 反射调同一存储 | ✅ |
+| `__system_property_get`(native) | 属性存储 | — | ✅ |
+| `getprop` 命令 | 属性存储 | — | ✅ |
+| `Build.*` 静态字段 | **zygote 启动缓存** | 反射读缓存 | 🔴 需时序修复 |
+| `/system/build.prop` 文件 | 文件 | — | ✅ sus_paths |
+
+**B. 系统服务 Binder 层**
+| 服务.方法 | 数据 | SUSFS | 备注 |
+|---|---|---|---|
+| `TelephonyManager.*`(IMEI/IMSI/运营商) | telephony 服务 | ✅ | 权限 READ_PRIVILEGED 保护 |
+| `PackageManager.getInstalled*` | package 服务 | 🔴 | 非 Zygisk 无解 |
+| `ActivityManager.getRunning*` | activity 服务 | 🔴 | 非 Zygisk 无解 |
+| `WifiManager.getConnectionInfo` | wifi 服务 | ✅ | MAC 固定 02:00:00:00:00:00 |
+| `BluetoothAdapter.getAddress` | bt 服务 | 🟡 | 需内核 patch |
+| `LocationManager` | location 服务 | 🔴 | 虚拟定位需 Hook |
+| `SensorManager.getSensorList` | sensor 服务 | 🔴 | 云机检测 |
+| `BatteryManager.getIntProperty` | battery 服务 | 🟡 | 备用机检测 |
+| `UsageStatsManager.queryUsageStats` | usage 服务 | 🔴 | 羊毛党检测(应用使用) |
+| `StorageManager/StatFs` | 文件系统 | 🟡 | 设备规格指纹 |
+| `DisplayManager`(分辨率) | 系统服务 | ✅ | 属性层 |
+| `DevicePolicyManager` | 设备管理 | 🔴 | 企业管控检测 |
+| `AppOpsManager` | 权限记录 | 🔴 | 权限使用指纹 |
+
+**C. native/JNI 层**
+| 机制 | 数据源 | SUSFS |
+|---|---|---|
+| syscall open/read/stat | VFS 层 | ✅(需验证原始 syscall) |
+| ioctl(SIOCGIFHWADDR) | 内核 net | 🔴 MAC |
+| uname/sysconf | 内核 | ✅ 已修 |
+| dlopen/dlsym | 进程内存 | ✅ 无注入 |
+| ptrace(反调试) | 进程 | ✅ TracerPid=0 |
+| socket bind/connect | 网络 | 🟡 云机检测(luna checkvtools) |
+| netlink | 网络事件 | 🟡 |
+
+**D. 文件系统层**
+| 文件 | 用途 | SUSFS |
+|---|---|---|
+| /proc/version cpuinfo cmdline mounts | 内核/系统 | ✅ 已修 |
+| /proc/uptime | 新机检测 | 🟡 未处理 |
+| /proc/self/maps status environ attr fd | 注入/调试 | ✅ 干净 |
+| /proc/kallsyms | 内核符号 | ✅ kptr_restrict |
+| /sys/class/net/*/address | MAC | 🔴 需 patch |
+| /sys/class/android_usb/iSerial | USB SN | 🟡 需 patch |
+| /dev/qemu_pipe 等 | 模拟器 | ✅ 不存在 |
+| /dev/block/by-name | 分区 | 🟡 部分 |
+| /data/adb /data/local /data/property | root 痕迹 | ✅ sus_map/sus_paths |
+| /data/misc/profiles | 新机/JIT | ✅ 正常设备 |
+
+**E. Android 特有机制**
+| 机制 | 用途 | 状态 |
+|---|---|---|
+| BroadcastReceiver(电池/开机) | 备用机检测(电量 100%+无 SIM) | 🟡 |
+| AccessibilityService | 改机/云控检测(luna findapply) | ✅ 无无障碍服务 |
+| NotificationListener | 通知监控 | ✅ 无 |
+| ContentObserver | Settings 变化监听 | 🟡 |
+| ContentProvider(联系人/短信/通话) | 数据量检测 | 🟡 |
+| WebView UA | 设备指纹 | ✅ http.agent |
+| OAID/GAID | 广告 ID | 🟡 属性/数据库 |
+| Keystore attestation | 证书链 | ✅ TEESimulator |
+
+**F. 网络/云端**
+| 机制 | 用途 | 状态 |
+|---|---|---|
+| 网络指纹(IP/运营商/基站) | 云机检测 | ✅ 真实网络 |
+| 代理/VPN/TUN 检测 | 羊毛党 | ✅ 干净 |
+| DNS/HTTP 指纹 | 云端比对 | 🟡 |
+| 服务器设备指纹比对 | 账号风控 | 🟡 不可控 |
+
+### 10.3 真实漏洞封堵细化(实施方案)
+
+**漏洞 1:Build.* 静态字段(反射读 zygote 缓存)**
+- 方案:KSUN 内核 `execve` hook 检测到 **zygote 启动**(argv[0] 含 "zygote")时,在放行前先调用 `susfs_restore_properties()`(或至少属性伪装部分)
+- 效果:zygote 读到的就是伪装属性 → `Build.*` 缓存伪装值 → 反射安全
+- 边界:`on_post_fs_data()` 的调用保留(覆盖运行时配置);新增 zygote 前预应用
+- 验证:伪装后重启,`Build.MODEL` 反射 == 伪装值
+
+**漏洞 2:MAC 地址(NetworkInterface 反射/ioctl/文件)**
+- 方案:内核 patch
+  - `net/core/net-sysfs.c` `address_show()` → 返回伪装 MAC
+  - `net/core/dev_ioctl.c` `dev_ifsioc()`(SIOCGIFHWADDR)→ 返回伪装 MAC
+- 伪装值:配置(如 `02:00:00:00:00:01` 或随机)——两条路一致
+- 验证:App `NetworkInterface.getHardwareAddress()` == 伪装值
+
+**漏洞 3:进程列表(ps——Runtime.exec)**
+- 方案:内核 patch `hide_task`——`/proc` 目录遍历(`proc_pid_readdir`/getdents)时过滤白名单进程(如 monitor/TEESimulator)
+- 验证:`Runtime.exec("ps")` 看不到目标进程
+
+**漏洞 4:原始 syscall 绕过 sus_paths(待验证)**
+- 方案:验证 SUSFS 的 VFS hook(do_sys_open/getdents)对原始 syscall 的覆盖——若绕过,Duck Detector 案例(已删 su 文件解决)——**当前无 su 文件,天然安全**;需验证其他 sus_paths(如 /data/adb/ksu)
+- 验证:以 untrusted_app 原始 syscall 读 sus_paths 文件
+
+**可选补充(按威胁)**
+| # | 项 | 封堵 | 对应检测 |
+|---|---|---|---|
+| 5 | /proc/uptime | 内核 patch 伪装(偏移真实 uptime) | 新机/备用机 |
+| 6 | 传感器/电池 Binder | 需 Hook(非 Zygisk 难) | 云机/备用机 |
+| 7 | 存储容量 StatFs | sus_mounts/内核 | 规格指纹 |
+
+### 10.4 深挖总结论
+
+1. **检测器实际枚举的路径绝大多数天然安全**(su 全路径/模拟器文件不存在、environ/attr/fd 干净)
+2. **真实漏洞收敛为 4 项**:Build 缓存时机 / MAC / 进程列表 / 原始 syscall 验证——**全部内核 patch 可解**
+3. **Binder 层(应用列表/虚拟定位/传感器/使用记录)是免 Zygisk 的边界**——但 IMEI 已权限保护,其余检测器实际使用率低
+4. **无需覆盖"全部机制"**——只需覆盖"检测器实际用到的"——已确认检测器路径全集(10.1)大部分已安全
