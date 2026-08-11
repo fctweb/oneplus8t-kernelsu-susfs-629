@@ -507,3 +507,78 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 | IMEI/ICCID/手机号生成规则(TAC/号段) | ✅ 借鉴(规则合理) |
 | **device/board/hardware/fingerprint** | ❌ 不能随机——**需每机型真实代号**(公开数据采集:gsmarena/设备源码 build.prop 归档) |
 | cpuinfo | 按 SoC 分类扩充(骁龙/MTK/麒麟各 1-2 套模板) |
+
+---
+
+## 十二、机型参数数据采集(2026-08-11 已完成)
+
+### 12.1 采集目标与方法
+
+**目标**:为自研 App 建立"每机型真实代号"数据库(device/board/soc/fingerprint)——替代抹机王的随机生成(会被检测器交叉验证)。
+
+**数据源**(全部为**真实设备树源码**,非人工填写):
+
+| 来源 | 仓库 org | 设备树数 | 覆盖特点 |
+|---|---|---|---|
+| LineageOS | `LineageOS/android_device_*` | 326 | Google/Samsung/Moto/Sony/Xiaomi 国际机型 |
+| PixelExperience | `PixelExperience-Devices/device_*` | 148 | 更广(含 OPPO/realme/华为少量) |
+| crDroid | `crdroidandroid/android_device_*` | 72 | LG 系列 + 少量 |
+
+**采集脚本**:
+- `gh api` 拉取每个设备树:默认分支 → `lineage_<codename>.mk`/`aosp_<codename>.mk`/`<codename>.mk`(PRODUCT_MODEL/BRAND/DEVICE/MANUFACTURER)→ `BoardConfig.mk`(TARGET_BOARD_PLATFORM/include soc-common → SoC)
+- 过滤:排除 `-common` 公共仓库、CyanogenMod 时代仓库
+- 并行采集(xargs -P 8)+ 线程池补 soc
+
+### 12.2 采集结果(106 款真实机型)
+
+**产物文件**:`mojiwang-assets/device_profiles.json`(106 款,含 brand/model/device/manufacturer/soc/density/fingerprint)
+
+**品牌分布**:
+
+| 品牌 | 款数 | 代表机型 |
+|---|---|---|
+| Xiaomi/Redmi | 41 | MI 8(dipper)/Redmi Note 7(lavender)/Redmi K20(davinci)/Redmi Note 8(ginkgo) |
+| OnePlus | 8 | 7 Pro(guacamole)/7T(fajita)/6(enchilada)/5T(dumpling) |
+| LG | 13 | G2(d802)/G3(d855)/G5(h850) |
+| Motorola | 11 | Moto Z2 Play(albus)/G5S(montana)/X4(payton) |
+| Sony | 6 | Xperia Z3(sirius)/XZ1(poplar) |
+| Google | 5 | Nexus 5X(bullhead)/Nexus 6P(angler)/Pixel 2(walleye) |
+| Samsung | 4 | Galaxy S7(herolte)/S7 Edge(hero2lte) |
+| ASUS | 3 | ZenFone 5Z(Z01R) |
+| OPPO/华为/荣耀/realme 等 | 15 | Find7/Oppo R7 Plus/Honor View 10(berkeley)/realme X2 等 |
+
+**soc 覆盖**:97/106(91%)——含骁龙 625/660/710/845/855/865、麒麟 970、Helio G90T 等真实 SoC 代号。
+
+**字段示例**:
+```json
+{"brand":"Xiaomi","model":"MI 8","device":"dipper","manufacturer":"Xiaomi",
+ "soc":"sdm845","soc_name":"骁龙845","density":"440",
+ "fingerprint":"Xiaomi/dipper/dipper:13/TQ3A.230901.001/user/release-keys"}
+```
+
+### 12.3 数据缺口与原因(有据可查)
+
+| 缺口 | 原因 |
+|---|---|
+| **vivo 0 款** | 官方 bootloader 难解锁,第三方 ROM 生态几乎不存在(设备树搜索 0 命中) |
+| **realme 仅 2 款** | 同上(部分机型有 PE/crDroid 支持) |
+| **荣耀/华为仅 3 款** | 官方解锁受限,第三方 ROM 极少 |
+| **抹机王 306 款老机型(2016)** | 无设备树(Android 5.1 时代)且过时——伪装成 2016 老设备反被检测器判定"异常老旧" |
+| **fingerprint 的 buildId 段** | 设备树不携带完整固件指纹——用 AOSP 13 基线 `TQ3A.230901.001` 生成(格式自洽,非某固件精确指纹) |
+
+### 12.4 与抹机王数据的本质区别
+
+| 维度 | 抹机王(306 款) | 自研库(106 款设备树) |
+|---|---|---|
+| 来源 | 本地 xls 6 列索引 + 规则生成 | **真实设备树源码** |
+| device/board | 随机生成(非真实) | **真实代号**(dipper/lavender 等) |
+| fingerprint | 拼接(矛盾) | 格式自洽(brand/device/device:13/...) |
+| 交叉验证 | 会被检测器拆穿 | device vs fingerprint 一致 |
+| 覆盖 | 306 款(2016 老机型) | 106 款(Android 11-13 主流) |
+
+### 12.5 扩展机制
+
+1. **JSON 人工增补**:`mojiwang-assets/device_profiles.json` 可直接增删条目(每款 8 字段)
+2. **gsmarena 爬虫**(后续):有反爬,需维护 UA/cookie——可补 vivo/realme 的 model/soc(但无 device 代号)
+3. **固件 build.prop 归档**(后续):从刷机固件提取完整 build.prop(含精确 fingerprint)——最完整但需固件源
+4. **自研 App 动态补充**:用户自选机型时,若库中缺失,可实时查询/提示手动录入
