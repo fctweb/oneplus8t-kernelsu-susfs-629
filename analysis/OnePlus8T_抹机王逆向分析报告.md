@@ -465,3 +465,45 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 2. **真实漏洞收敛为 4 项**:Build 缓存时机 / MAC / 进程列表 / 原始 syscall 验证——**全部内核 patch 可解**
 3. **Binder 层(应用列表/虚拟定位/传感器/使用记录)是免 Zygisk 的边界**——但 IMEI 已权限保护,其余检测器实际使用率低
 4. **无需覆盖"全部机制"**——只需覆盖"检测器实际用到的"——已确认检测器路径全集(10.1)大部分已安全
+
+---
+
+## 十一、数据来源确认(机型参数从何而来——逆向定论)
+
+> 逆向确认:抹机王的"其它软硬件信息"**全部本地规则生成**(非服务器/非真实机型数据库)。
+
+### 11.1 本地 xls(6 列机型索引)
+- `assets/deviceBrand.xls`:306 条 × 6 列(model/brand/release/brandCh/resolution/densityDpi)——**仅 UI 机型选择索引**
+
+### 11.2 本地生成规则(逆向 `h/a.smali` + `i/d.smali` + `i/q.smali` 确认)
+
+| 字段 | 生成规则(证据) |
+|---|---|
+| IMEI | `h/a.c()`:品牌 TAC 前缀(`35/01/33/44/45/49/50/51/52/53/54`)+ 随机数字 |
+| 手机号 | `i/d.g()`:移动号段库(`134,135,136,137,138,139,150,151,152,157,158,159,130,131,132,155,156,133,153`)随机 |
+| IMSI/MNC | `i/d.h()`:`460`(MCC)+ `00/01/02`(MNC) |
+| ICCID | `i/d.i()`:`898600/898602/898604/898607` 前缀 |
+| serial/android_id | `h/a.b()`:字符集 `0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ` 随机 |
+| fingerprint | `i/q.a()`:`brand/device/device:release/buildId:user/release-keys` 拼接 |
+| device/board/hardware/buildId/host/macAddress/softVersion/versionIncremental | `i/d.f()/j()`:数字/字母随机组合 |
+| cpuinfo | `assets/cpuinfo`(MTK MT6769T 快照)+ `cpuinfo2`(x86 VM 快照) |
+
+### 11.3 服务器角色(api.xiaoanapp.com)
+- `WPKAgClaspDevice` 等接口 = **付费/风控/设备上报**(retrofit 调用)——**非机型参数来源**
+
+### 11.4 核心结论(为什么不能照搬)
+
+**抹机王参数是"规则伪造"而非"真实机型参数"**:
+- device/board/hardware **随机生成**(非该机型真实代号)
+- fingerprint **拼接**(device 部分随机)
+- **只适用于沙盒内**(App 不交叉验证)——`Build.DEVICE` vs `ro.product.device` vs `fingerprint` 一对比就矛盾
+- **SUSFS 系统级方案会被检测器交叉验证**——**不能照搬随机生成,需补每机型真实代号**
+
+### 11.5 自研 App 数据策略
+
+| 数据 | 处理 |
+|---|---|
+| xls 306 款(model/brand/分辨率/密度) | ✅ 直接搬(公开规格) |
+| IMEI/ICCID/手机号生成规则(TAC/号段) | ✅ 借鉴(规则合理) |
+| **device/board/hardware/fingerprint** | ❌ 不能随机——**需每机型真实代号**(公开数据采集:gsmarena/设备源码 build.prop 归档) |
+| cpuinfo | 按 SoC 分类扩充(骁龙/MTK/麒麟各 1-2 套模板) |
