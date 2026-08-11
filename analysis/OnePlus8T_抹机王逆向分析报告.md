@@ -516,65 +516,73 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 
 **目标**:为自研 App 建立"每机型真实代号"数据库(device/board/soc/fingerprint)——替代抹机王的随机生成(会被检测器交叉验证)。
 
-**数据源**(全部为**真实设备树源码**,非人工填写):
+**数据源**(全部为**真实设备树/固件源码**,非人工填写):
 
-| 来源 | 仓库 org | 设备树数 | 覆盖特点 |
-|---|---|---|---|
-| LineageOS | `LineageOS/android_device_*` | 326 | Google/Samsung/Moto/Sony/Xiaomi 国际机型 |
-| PixelExperience | `PixelExperience-Devices/device_*` | 148 | 更广(含 OPPO/realme/华为少量) |
-| crDroid | `crdroidandroid/android_device_*` | 72 | LG 系列 + 少量 |
+| 来源 | 类型 | 覆盖特点 |
+|---|---|---|
+| LineageOS `android_device_*`(326 仓库) | 设备树 | Google/Samsung/Moto/Sony/Xiaomi 国际机型 |
+| PixelExperience `device_*`(148 仓库) | 设备树 | 更广(含 OPPO/realme/华为少量) |
+| crDroid `android_device_*`(72 仓库) | 设备树 | LG 系列 + 少量 |
+| **PlayInterityPIFs**(PIF 指纹库,4940 个 build.prop) | **原厂 build.prop 归档** | **234 品牌全量(三星 88/Xiaomi 78/Lenovo 62 等)** |
+| **固件 dump 仓库**(realme 52 + vivo 29 个) | **固件 dump build.prop** | **vivo/realme/iQOO 真实固件指纹** |
 
 **采集脚本**:
-- `gh api` 拉取每个设备树:默认分支 → `lineage_<codename>.mk`/`aosp_<codename>.mk`/`<codename>.mk`(PRODUCT_MODEL/BRAND/DEVICE/MANUFACTURER)→ `BoardConfig.mk`(TARGET_BOARD_PLATFORM/include soc-common → SoC)
-- 过滤:排除 `-common` 公共仓库、CyanogenMod 时代仓库
-- 并行采集(xargs -P 8)+ 线程池补 soc
+- 设备树:`gh api` 拉取默认分支 → `lineage_<codename>.mk`/`aosp_<codename>.mk`(PRODUCT_MODEL/BRAND/DEVICE)→ `BoardConfig.mk`(SoC)
+- PIF:git clone 本地解析 4940 个 build.prop(按 device 去重)
+- dump:git trees API + 常见路径 raw 直拉 build.prop(vivo/realme 固件)
+- 过滤:排除 `-common` 公共仓库、`alps`/`qti` 平台名
 
-### 12.2 采集结果(106 款真实机型)
+### 12.2 采集结果(919 款真实机型)
 
-**产物文件**:`mojiwang-assets/device_profiles.json`(106 款,含 brand/model/device/manufacturer/soc/density/fingerprint)
+**产物文件**:`mojiwang-assets/device_profiles.json`(919 款,234 品牌,含 brand/model/device/manufacturer/soc/density/fingerprint/source)
 
-**品牌分布**:
+**品牌分布 top15**:
 
-| 品牌 | 款数 | 代表机型 |
+| 品牌 | 款数 | 代表机型(真实代号) |
 |---|---|---|
-| Xiaomi/Redmi | 41 | MI 8(dipper)/Redmi Note 7(lavender)/Redmi K20(davinci)/Redmi Note 8(ginkgo) |
-| OnePlus | 8 | 7 Pro(guacamole)/7T(fajita)/6(enchilada)/5T(dumpling) |
-| LG | 13 | G2(d802)/G3(d855)/G5(h850) |
-| Motorola | 11 | Moto Z2 Play(albus)/G5S(montana)/X4(payton) |
-| Sony | 6 | Xperia Z3(sirius)/XZ1(poplar) |
-| Google | 5 | Nexus 5X(bullhead)/Nexus 6P(angler)/Pixel 2(walleye) |
-| Samsung | 4 | Galaxy S7(herolte)/S7 Edge(hero2lte) |
-| ASUS | 3 | ZenFone 5Z(Z01R) |
-| OPPO/华为/荣耀/realme 等 | 15 | Find7/Oppo R7 Plus/Honor View 10(berkeley)/realme X2 等 |
+| Samsung | 88 | Galaxy S21(oberyl)/S20(y2s)/A52(a52q) |
+| Xiaomi/Redmi | 78 | MI 8(dipper)/Redmi Note 7(lavender)/K20(davinci)/POCO F1(beryllium) |
+| Lenovo | 62 | Z6 Lite(kunlun2)/K5 Pro 等 |
+| Nokia | 28 | 6.1 Plus(DRG_sprout)/7.2(ddpi_sprout) |
+| Motorola | 26 | Z2 Play(albus)/G5S(montana) |
+| Meizu | 22 | 16th(m1882)/16s(m1981) |
+| ASUS | 20 | ZenFone 5Z(Z01R)/ROG Phone |
+| LG | 18 | G2(d802)/G3(d855)/G5(h850) |
+| ZTE | 17 | Axon 7(ailsa_ii)/Blade 系列 |
+| **vivo** | **11** | **V2144/V2219/V2415/V2453A/PD2224(编译器签名指纹)** |
+| **realme** | **7** | **RMX3941(RE607CL1)/RM6785/RMX3261/GT Neo 等** |
+| **OPPO** | **4** | CPH1917/OP47DD/A33w/Find7 |
+| **华为/荣耀** | **6** | P30/Honor View 10(berkeley)/Y336-U02 |
+| **iQOO** | **1** | I2009(2009) |
+| 其他小众品牌 | ~120 | DIGMA/DEXP/Itel/BLU/TECNO/UMIDIGI 等 |
 
-**soc 覆盖**:97/106(91%)——含骁龙 625/660/710/845/855/865、麒麟 970、Helio G90T 等真实 SoC 代号。
+**soc 覆盖**:约 60%(PIF/dump 的 build.prop 含 `ro.board.platform`——如 msmnile/sm8250/trinket 等真实平台代号)。
 
-**字段示例**:
+**字段示例(vivo 真实固件指纹)**:
 ```json
-{"brand":"Xiaomi","model":"MI 8","device":"dipper","manufacturer":"Xiaomi",
- "soc":"sdm845","soc_name":"骁龙845","density":"440",
- "fingerprint":"Xiaomi/dipper/dipper:13/TQ3A.230901.001/user/release-keys"}
+{"brand":"vivo","model":"V2453A","device":"PD2453",
+ "fingerprint":"vivo/PD2453/PD2453:15/AP3A.240905.015.A2/compiler2814...:user/release-keys"}
 ```
 
 ### 12.3 数据缺口与原因(有据可查)
 
-| 缺口 | 原因 |
+| 缺口 | 现状与原因 |
 |---|---|
-| **vivo 0 款** | 官方 bootloader 难解锁,第三方 ROM 生态几乎不存在(设备树搜索 0 命中) |
-| **realme 仅 2 款** | 同上(部分机型有 PE/crDroid 支持) |
-| **荣耀/华为仅 3 款** | 官方解锁受限,第三方 ROM 极少 |
-| **抹机王 306 款老机型(2016)** | 无设备树(Android 5.1 时代)且过时——伪装成 2016 老设备反被检测器判定"异常老旧" |
-| **fingerprint 的 buildId 段** | 设备树不携带完整固件指纹——用 AOSP 13 基线 `TQ3A.230901.001` 生成(格式自洽,非某固件精确指纹) |
+| **vivo 11 款** | 官方 bootloader 难解锁,设备树几乎不存在——**已通过固件 dump(Android-FW-Dumps/RandomPush/MinatiScape 等 29 仓库)补到 11 款真实固件指纹** |
+| **realme 7 款** | 同上——**已通过固件 dump(DroidDumps/Jasxh-Dumps/Mediatek-leaks 等 52 仓库)补到 7 款** |
+| **荣耀/华为 6 款** | 官方解锁受限,设备树少(kiwi/berkeley 已采)——PIF 补 4 款 |
+| **抹机王 306 款老机型(2016)** | 无设备树且过时——伪装成 2016 老设备反被检测器判定"异常老旧" |
+| **fingerprint 的 buildId 段** | 设备树不携带完整固件指纹——**PIF/dump 的原厂 build.prop 有精确 fingerprint(含 buildId)**;设备树来源(106 款)用 AOSP 13 基线生成(格式自洽) |
 
 ### 12.4 与抹机王数据的本质区别
 
-| 维度 | 抹机王(306 款) | 自研库(106 款设备树) |
+| 维度 | 抹机王(306 款) | 自研库(919 款设备树+固件) |
 |---|---|---|
-| 来源 | 本地 xls 6 列索引 + 规则生成 | **真实设备树源码** |
-| device/board | 随机生成(非真实) | **真实代号**(dipper/lavender 等) |
-| fingerprint | 拼接(矛盾) | 格式自洽(brand/device/device:13/...) |
+| 来源 | 本地 xls 6 列索引 + 规则生成 | **真实设备树 + 原厂 build.prop(PIF 4940 个)** |
+| device/board | 随机生成(非真实) | **真实代号**(dipper/lavender/PD2453/RE607CL1) |
+| fingerprint | 拼接(矛盾) | **原厂真实指纹(vivo 编译器签名/三星/小米)** 或格式自洽 |
 | 交叉验证 | 会被检测器拆穿 | device vs fingerprint 一致 |
-| 覆盖 | 306 款(2016 老机型) | 106 款(Android 11-13 主流) |
+| 覆盖 | 306 款(2016 老机型) | **919 款/234 品牌(含 vivo/realme/iQOO)** |
 
 ### 12.5 扩展机制
 
