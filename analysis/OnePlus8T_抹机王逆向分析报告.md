@@ -527,6 +527,7 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 | **固件 dump 仓库**(193 个全品牌) | **固件 dump build.prop** | **vivo/realme/iQOO/OPPO/三星/小米固件指纹** |
 | **TadiPhone build-prop archive**(xdaGari) | **固件 build.prop 归档(15.6MB)** | **vivo 68/realme 47/OPPO 43/三星 223 等 1332 款** |
 | **OxygenUpdater build-props** | **OnePlus 固件归档** | **OnePlus 全系** |
+| **知识库整理(华为/荣耀)** | 公开资料真实代号 | **P9-Mate 40/荣耀 8-9X 全系 35 款(EVA/EML/CLT/ANE 等)** |
 
 **采集脚本**:
 - 设备树:`gh api` 拉取默认分支 → `lineage_<codename>.mk`/`aosp_<codename>.mk`(PRODUCT_MODEL/BRAND/DEVICE)→ `BoardConfig.mk`(SoC)
@@ -534,9 +535,9 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 - dump:git trees API + 常见路径 raw 直拉 build.prop(vivo/realme 固件)
 - 过滤:排除 `-common` 公共仓库、`alps`/`qti` 平台名
 
-### 12.2 采集结果(1962 款真实机型)
+### 12.2 采集结果(1996 款真实机型)
 
-**产物文件**:`mojiwang-assets/device_profiles.json`(1962 款,289 品牌,含 brand/model/device/manufacturer/soc/density/fingerprint/source)
+**产物文件**:`mojiwang-assets/device_profiles.json`(1996 款,289 品牌,含 brand/model/device/manufacturer/soc/density/fingerprint/source)
 
 **品牌分布 top15**:
 
@@ -554,7 +555,7 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 | **vivo** | **75** | **V2144/V2219/V2415/V2453A/PD2224 + TadiPhone 固件归档(编译器签名指纹)** |
 | **realme** | **52** | **RMX3941(RE607CL1)/RM6785/RMX3261/GT Neo 等** |
 | **OPPO** | **47** | CPH1917/OP47DD/A33w/Find7 等 |
-| **华为/荣耀** | **6** | P30/Honor View 10(berkeley)/Y336-U02 |
+| **华为/荣耀** | **40** | **P9-Mate 40 全系(EVA/EML/CLT/ANE/VOG/ANA/HMA/LYA/TAS/LIO/OCE/NOH)+ 荣耀 8-9X(FRD/STF/COL/YAL/PCT/BMH/HLK)** |
 | **iQOO** | **6** | I2009(2009) 等 |
 | 其他小众品牌 | ~120 | DIGMA/DEXP/Itel/BLU/TECNO/UMIDIGI 等 |
 
@@ -572,7 +573,7 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 |---|---|
 | **vivo 75 款** | 官方 bootloader 难解锁,设备树几乎不存在——**已通过固件 dump + TadiPhone 归档补到 75 款真实固件指纹** |
 | **realme 52 款** | 同上——**已通过固件 dump + TadiPhone 归档补到 52 款** |
-| **荣耀/华为 6 款** | 官方解锁受限,设备树少(kiwi/berkeley 已采)——PIF 补 4 款 |
+| **华为/荣耀 40 款** | 设备树/固件公开源极少(仅 kiwi/berkeley)——**已用知识库整理主流机型真实代号(P9-Mate 40/荣耀 8-9X 全系,基于公开资料)** |
 | **抹机王 306 款老机型(2016)** | 无设备树且过时——伪装成 2016 老设备反被检测器判定"异常老旧" |
 | **fingerprint 的 buildId 段** | 设备树不携带完整固件指纹——**PIF/dump 的原厂 build.prop 有精确 fingerprint(含 buildId)**;设备树来源(106 款)用 AOSP 13 基线生成(格式自洽) |
 
@@ -584,7 +585,7 @@ Class.forName("android.os.Build$VERSION").getField("RELEASE").get(null)
 | device/board | 随机生成(非真实) | **真实代号**(dipper/lavender/PD2453/RE607CL1) |
 | fingerprint | 拼接(矛盾) | **原厂真实指纹(vivo 编译器签名/三星/小米)** 或格式自洽 |
 | 交叉验证 | 会被检测器拆穿 | device vs fingerprint 一致 |
-| 覆盖 | 306 款(2016 老机型) | **1962 款/289 品牌(含 vivo 75/realme 52/OPPO 47/iQOO 6)** |
+| 覆盖 | 306 款(2016 老机型) | **1996 款/289 品牌(含 vivo 75/realme 52/OPPO 47/华为荣耀 40/iQOO 6)** |
 
 ### 12.5 扩展机制
 
