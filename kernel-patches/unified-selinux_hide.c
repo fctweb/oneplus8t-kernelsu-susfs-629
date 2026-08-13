@@ -216,6 +216,25 @@ static bool buf_mentions_ksu(const char *buf, size_t size)
 		return true;
 	if (strnstr(buf, KSU_DOMAIN_FULL, size))
 		return true;
+	/* Root-domain probes (magiskkiller / Hunter 6.6.5 context-oracle):
+	 * mirror a kernel with NONE of these domains (same -EINVAL reply as
+	 * KSU_TAG above), so riskCodes like AOSP_SU_TRANSITION /
+	 * ADB_ROOT_CONTEXT / ZYGISK_NEXT_POLICY / MAGISK_* don't fire.
+	 * Context format: u:r:X:s0 (domain) / u:object_r:X_file:s0 (file). */
+	if (strnstr(buf, ":su:", size))
+		return true;
+	if (strnstr(buf, "adbroot", size))
+		return true;
+	if (strnstr(buf, "magisk", size))
+		return true;
+	if (strnstr(buf, "zygisk", size))
+		return true;
+	if (strnstr(buf, "xposed", size))
+		return true;
+	if (strnstr(buf, "lsposed", size))
+		return true;
+	if (strnstr(buf, "kernelsu", size))
+		return true;
 	/* /sys/fs/selinux/context 内容格式: u:r:X:s0 */
 	return false;
 }
