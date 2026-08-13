@@ -86,7 +86,7 @@ LineageOS 官方安装包是 OTA 格式(`payload.bin`),需用 **payload_dumper**
 |---|---|---|
 | **LineageOS 20 官方包** | 本地:`lineage-20.0-20240209-nightly-kebab-signed/`(含 payload.bin) | 用于提取镜像 + recovery 卡刷 |
 | **提取的系统镜像** | 本地:`payload_dumper/output/` | boot / dtbo / odm / product / recovery / system / system_ext / vbmeta / vbmeta_system / vendor |
-| **移植内核 boot.img** | GitHub Actions:`qcxl/oneplus8t-kernelsu-susfs-629` → **Build rsuntk KSU + SUSFS Kernel (debug)** → 产物 `kebab-kernel-ksu-debug.zip` → 解压得 `ksu-debug-boot.img` | ⚠️ **用稳定构建(CI run 31108984710)**,勿用最新未验证构建(会重启循环) |
+| **移植内核 boot.img** | GitHub Actions:`qcxl/oneplus8t-kernelsu-susfs-629` → **Build rsuntk KSU + SUSFS Kernel (debug)** → 产物 `kebab-kernel-ksu-debug.zip` → 解压得 `ksu-debug-boot.img` | ⚠️ **用已验证构建(当前:`7bf9edbc` = CI run 31662375179,含 Hunter 6.6.5 selinux_hide 黑名单扩展)**,勿用重启循环版(25753ede / db2be765 / a6472d7)与设备伪装版(early props/prjName/cpuinfo 伪装,已回滚);详见 §2.4 |
 | **ksud** | GitHub Actions:`qcxl/KernelSU-Next` → **Build Manager CI** → 产物 `ksud-aarch64-linux-android/.../ksud` | KSUN 后台守护进程(需手动部署) |
 | **KernelSU-Next App** | GitHub Actions:`qcxl/KernelSU-Next` → **Build Manager CI** → 产物 **`manager`**(apk) | root 管理器 App。⚠️ **用最新构建(v3.2.0-207+)**,旧版有"授予 root 权限失败"(12.7)与"Profile 模板拉取不到数据"(12.9)问题 |
 
@@ -96,11 +96,26 @@ LineageOS 官方安装包是 OTA 格式(`payload.bin`),需用 **payload_dumper**
 /Users/weifeng/Downloads/OnePlus8T/payload_dumper/output/*.img
 
 # 移植内核(从 CI 下载解压后)
-/Users/weifeng/Downloads/OnePlus8T/ksu-debug-boot.img   # 稳定版 31108984710
+/Users/weifeng/Downloads/OnePlus8T/ksu-debug-boot.img   # 当前已验证版 7bf9edbc(run 31662375179)
 
 # LineageOS 卡刷包
 /Users/weifeng/Downloads/OnePlus8T/lineage-20.0-20240209-nightly-kebab-signed.zip
 ```
+
+### 2.4 当前内核版本与提交对应关系(2026-08-13 核实)
+
+> 内核仓库:`qcxl/oneplus8t-kernelsu-susfs-629`(main 分支)。本机/设备当前实际使用状态如下。
+
+| 点 | Commit | CI run | 说明 |
+|---|---|---|---|
+| **当前设备内核(已刷)** | `7bf9edbc` | 31662375179 | = 3b7aa86(无设备伪装)+ **selinux_hide 黑名单扩展**(Hunter 6.6.5 的 su/adbroot/zygisk/magisk 域探测返回 -EINVAL,消除 independent SELinux Policy Risks/APatch——见 §12.11) |
+| **main 当前 HEAD** | `bf891e78` | — | 文档提交(不影响内核代码;内核代码最新 = 7bf9edbc) |
+| **设备伪装回滚点** | `3b7aa86` | — | early props / cpuinfo 伪装 / oplus prjName 等设备伪装代码全部移除(force push 到此) |
+| **#763(旧记忆中的回滚点)** | `29524cf7` | 31390657468 | linux_banner `@`→`.` 修复(Duck Detector maintainer 检测);是 3b7aa86 的祖先(+10 提交) |
+| **早期稳定版** | `a7de100b` | 31180401513 | 更早的稳定构建(重启循环三提交之前的基准) |
+| **重启循环版(勿用)** | `25753ede` / `db2be765` / `a6472d7` | — | ReZygisk 隐身相关,刷入即重启循环——已回滚 |
+
+**设备当前状态**:内核 7bf9edbc = 反检测完整(#763 的 linux_banner/-perf/prctl/version 伪装全在)+ 无设备伪装(属性真实 OnePlus 8T)+ Hunter 6.6.5 修复(selinux_hide 黑名单、lineage 置空、cil 隐藏——见 §12.11)。银行 App/KSUN/Momo 均正常。
 
 ---
 
@@ -420,6 +435,38 @@ adb shell "ls /system/bin/su"   # 非 root 应 No such file(隐藏生效)
 
 > ⚠️ **注意**:`adb shell su -c ...` 会报 not found——因 adb shell 进程带 app 标记,SUSFS 对它隐藏了 su;`adb root` 后已是 uid=0,直接执行命令即可。授权 App 的 su 走内核 sucompat 重定向,不受影响。**切勿把 su 做成符号链接**(会被 Hunter readlink 检测)。
 
+> ⚠️ **若 su 真丢失(重刷 system 后)**:`cp` 报 "No such file" 有两种情况——(a) su 已存在被 SUSFS 隐藏(**root 视角 `ls /system/bin/su` 能看到**);(b) su 真的不存在 + **SUSFS 内核 boot restore 无条件拦截该路径的 open/rename**(root 视角也是 No such file)——此时**无法通过 cp 重建**(内核拦截),且**切勿用 `adb remount` 尝试**(见 §11.5——会留 overlayfs 痕迹被检测)。App 授权走内核 sucompat 钩子,**不受 su 文件缺失影响**。
+
+### 11.5 ⚠️ 禁止 `adb remount`(overlayfs 残留被检测——完整前因后果)
+
+> **背景(2026-08-13 实测)**:为重建 su 执行 `adb remount`,导致 Hunter 6.6.5+ 报 **「Partition Stat Spoof Detected(sandbox dir)——STAT/MOUNT INCONSISTENCY(2 hit)」** 严重风险。
+
+**前因**:
+1. 动态分区下 `mount -o rw,remount /` 不生效(见下);改用 `adb remount` 成功让 /system 可写
+2. `adb remount` 实际是给 **/vendor、/odm 挂 overlayfs**(upperdir=`/mnt/scratch/overlay/vendor/upper`、`/mnt/scratch/overlay/odm/upper`)
+3. **关键坑:overlayfs 持久化**——Android 检测 `/mnt/scratch` 有数据 → **每次开机 init 自动重挂 overlay**(不是临时挂载,重启不消失!)
+
+**后果(检测原理)**:
+- stat `/vendor` 返回底层 dm 设备号 `252:4`(st_dev 走底层),而 `/proc/self/mountinfo` 顶层是 overlay 虚拟设备 `0:23`
+- **dev mismatch**:`stat=252:4 vs mountinfo=0:23` → 检测器判定挂载被篡改 → **STAT/MOUNT INCONSISTENCY**
+- 影响 /vendor、/odm 两项(2 hit)
+
+**解决方案(清 scratch + 重启)**:
+```bash
+adb shell "rm -rf /mnt/scratch/overlay/*"   # 清空 overlay 数据(init 检测空 → 不再重挂)
+adb reboot
+# 验证(必须全过):
+adb shell "grep -acE 'overlay.*(vendor|odm)' /proc/self/mountinfo"   # 应 0(无 overlay)
+adb shell "grep -aE ' /vendor | /odm ' /proc/self/mountinfo | awk '{print \$3, \$5}'"  # 应 252:4 /vendor、252:0 /odm
+adb shell "stat -c '%n %d' /vendor /odm"    # dev 应与 mountinfo 一致(64516=252:4、64512=252:0)
+```
+
+**注意事项(防复发)**:
+1. **永远不要用 `adb remount`**——它是 /vendor /odm overlayfs 的源头,且持久化(重启不清),被 Hunter 的 stat/mountinfo 一致性检测发现
+2. **动态分区 remount 真相**:`mount -o rw,remount /` 对动态分区(/) 不生效(Read-only)——如需写 /system 需先解决 SUSFS 拦截(见 11.4 警示),**不是 remount 能绕过的**
+3. 若已执行过 `adb remount`(即使没写文件):**开机后立即查 `grep -c overlay /proc/self/mountinfo`**——非 0 就按上面方案清理
+4. 检测后:**重新打开 Hunter 刷新**——「Partition Stat Spoof」应消失(其余检测项不受影响)
+
 ---
 
 ## 12. SUSFS 隐藏配置(银行 App 检测)
@@ -724,7 +771,14 @@ Hunter 升级到 6.6.5 后集成 `magiskkiller`(canyie)SELinux policy 检测 + B
    - **SELinux Root Policy Marker**:`ROOT_POLICY_TOKEN:adbroot@system_ext_sepolicy.cil / product_sepolicy.cil`——LineageOS 官方 policy 文件(0444 可读)里定义了 `adbroot` 域(`typeattributeset domain (... adbroot ...)` 等)——OEM 原生 policy 无此域 → 判为非 OEM 标记。**方案**:`sus_paths` 添加 `/system_ext/etc/selinux/system_ext_sepolicy.cil` + `/product/etc/selinux/product_sepolicy.cil` → App 读不到显示 `<missing>`(同 plat_sepolicy.cil 的 SELinux 限制待遇——"diagnostic only" 非风险),Marker 项消失。
    - 处理后顶部判定从「黑灰产设备」**降级为「高风险设备,可能存在攻击行为!」**——剩余项为 APatch Suspected(内核运行时 policy 的 KSU 特征,文件层无法消除)、机型&ROM 修改(LineageOS 非原生)、Automation 弱信号(USB 调试/开发者模式)。
 
-**结论**:核心高危项(#1/#8 STRONG HIT + Custom ROM + SELinux Root Policy Marker)已全部消除;顶部判定降级为「高风险设备」(残留项为内核 policy 特征与非原生 ROM 差异,无资金安全类强信号),银行 App/KSUN 功能不受影响。
+4. **独立 SELinux Policy Risks / APatch Suspected(内核级根治,提交 `7bf9edb`)**
+   - **根因**:`riskCodes=[AOSP_SU_TRANSITION, ADB_ROOT_CONTEXT, ZYGISK_NEXT_POLICY]`——magiskkiller 通过 context-oracle(写 `/sys/fs/selinux/context` 探测 `u:r:su:s0` / `u:r:adbroot:s0` / `u:r:zygisk:s0` 等)推断域是否存在。原 `selinux_hide.c` 的过滤函数 `buf_mentions_ksu()` 只匹配 `:ksu:`/`:ksu_`/`u:r:ksu:s0`——su/adbroot/zygisk 不匹配 → 走真实 policy 判定(KSU 加载的 su 规则 + LineageOS 原生 adbroot 域)→ 命中。
+   - **方案**(改 `kernel-patches/unified-selinux_hide.c` 的 `buf_mentions_ksu`):扩展黑名单匹配 `:su:`、`adbroot`、`magisk`、`zygisk`、`xposed`、`lsposed`、`kernelsu`——`my_write_context`/`my_write_access` 对命中返回 **-EINVAL**(模拟"域不存在",与真实无 root 内核一致;不能返回假成功——会暴露"域存在且可查")。CI 的 "Apply unified selinux_hide.c" 步骤自动用该文件覆盖 `drivers/kernelsu/feature/selinux_hide.c`,无需改上游 KSU 源。
+   - **验证**(刷入后):Hunter 的 `independent SELinux Policy Risks` + `APatch SELinux Policy Suspected` **合并降级为 `SELinux Policy Check Inconclusive`**——`oracleTrust=INCONCLUSIVE`、`product=UNKNOWN`、`contextEvidence=0`、`accessEvidence=0`、`riskCodes=[]`;**顶部「黑灰产设备/高风险设备」大判定标题完全消失**。
+     - **Inconclusive 说明(2026-08-13 决策:保持现状)**:`oracleReasons=[ACCESS_UNAVAILABLE:41]` 源于 `my_write_access` 对 root 域探测返回 -EINVAL(magiskkiller 判定"oracle 探测不可用")。这是可接受的最优状态:riskCodes 空、顶部判定消失、银行 App/KSUN 正常。备选(改返回 denied 决策模拟真实 LineageOS、可能变 TRUSTED)需重建内核+全面回归,收益不确定且有重新暴露风险——**已决定不实验,保持 Inconclusive**。
+   - **剩余项**(仅 2 项非高危):「当前设备机型&ROM可能被修改」(LineageOS 非 OnePlus 原生——需原生 ROM)、「Automation/Input Injection Weak Signal」(开发者模式+USB 调试开启——弱信号)。均无资金安全类强信号,银行 App/KSUN 功能不受影响。
+
+**结论**:核心高危项(#1/#8 STRONG HIT + Custom ROM + SELinux Root Policy Marker + independent SELinux Policy Risks/APatch)已全部消除;顶部聚合判定消失,仅剩 2 项非高危(机型差异/调试弱信号),银行 App/KSUN 功能不受影响。
 
 ## 13. 最终验证清单
 
