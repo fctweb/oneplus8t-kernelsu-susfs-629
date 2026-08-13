@@ -719,7 +719,12 @@ Hunter 升级到 6.6.5 后集成 `magiskkiller`(canyie)SELinux policy 检测 + B
    - 「非 ROM 原生系统」= LineageOS 与 OnePlus 原生组件差异(属性层面无解)
    - 若要进一步压制,方向:改 `/system_ext/etc/selinux/system_ext_sepolicy.cil` 与 `/product/etc/selinux/product_sepolicy.cil` 文件内容(去 adbroot token,文件无 verity 强校验)+ 关闭开发者选项/ADB(弱信号)——需评估对 SELinux/调试的影响
 
-**结论**:核心高危项(#1/#8 STRONG HIT)已通过移除 security_patch 伪装根治;顶部「黑灰产设备」判定因 SELinux policy 痕迹(#3/#4)与机型差异(#5)仍保留,但无资金安全类强信号,银行 App/KSUN 功能不受影响。
+3. **追加处理(同日实测,均验证通过)**:
+   - **Custom ROM Identity Contradiction(STRONG HIT)**:`CUSTOM_ROM_MARKER_CONTRADICTS_OEM_IDENTITY`——brand/manufacturer=oneplus(OEM 身份)但 `ro.modversion`/`ro.lineage.*`(LineageOS 标记)存在 → 矛盾。**方案**:`susfs_config.json` 的 `set_props` 必须用 **dict 格式**(`{"ro.lineage.version": "", ...}`——注意旧 list 格式只有属性名、置空不生效),把 9 条 lineage/modversion 属性置空字符串:`ro.modversion`、`ro.lineage.version`、`ro.lineage.build.version`、`ro.lineage.build.version.plat.rev`、`ro.lineage.build.version.plat.sdk`、`ro.lineagelegal.url`、`ro.lineage.releasetype`、`ro.lineage.device`、`ro.lineage.display.version`。⚠️ **禁止用 `delete_props` 删除**(会清零属性名首字节、破坏属性区 trie,留"洞"反而被 Hunter 检测;ksud 源码注释明确此点)。改后 `getprop ro.lineage.*` 全空,Custom ROM 项消失。
+   - **SELinux Root Policy Marker**:`ROOT_POLICY_TOKEN:adbroot@system_ext_sepolicy.cil / product_sepolicy.cil`——LineageOS 官方 policy 文件(0444 可读)里定义了 `adbroot` 域(`typeattributeset domain (... adbroot ...)` 等)——OEM 原生 policy 无此域 → 判为非 OEM 标记。**方案**:`sus_paths` 添加 `/system_ext/etc/selinux/system_ext_sepolicy.cil` + `/product/etc/selinux/product_sepolicy.cil` → App 读不到显示 `<missing>`(同 plat_sepolicy.cil 的 SELinux 限制待遇——"diagnostic only" 非风险),Marker 项消失。
+   - 处理后顶部判定从「黑灰产设备」**降级为「高风险设备,可能存在攻击行为!」**——剩余项为 APatch Suspected(内核运行时 policy 的 KSU 特征,文件层无法消除)、机型&ROM 修改(LineageOS 非原生)、Automation 弱信号(USB 调试/开发者模式)。
+
+**结论**:核心高危项(#1/#8 STRONG HIT + Custom ROM + SELinux Root Policy Marker)已全部消除;顶部判定降级为「高风险设备」(残留项为内核 policy 特征与非原生 ROM 差异,无资金安全类强信号),银行 App/KSUN 功能不受影响。
 
 ## 13. 最终验证清单
 
