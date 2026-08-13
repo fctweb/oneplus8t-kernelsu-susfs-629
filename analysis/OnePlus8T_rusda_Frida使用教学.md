@@ -380,9 +380,13 @@ avc: denied { read write } for path=/memfd:jit-cache (deleted) dev="tmpfs"
   adb shell "setsid /data/local/tmp/audioserver -l 127.0.0.1:47777 >/data/local/tmp/rusda.log 2>&1 &"   # 2. 启动 rusda(必用 setsid——nohup 会被 adb shell 退出杀掉)
   adb forward tcp:47777 tcp:47777 # 3. 端口转发
   frida -H 127.0.0.1:47777 -p <pid> -l script.js    # 4. 分析
-  # 分析完:
-  adb shell "kill \$(ps -A | grep 'tmp/audioserver' | awk '{print \$2}') 2>/dev/null; rm -f /data/local/tmp/audioserver"
-  adb shell setenforce 1          # 5. 立即恢复 enforcing(关键!)
+  # 分析完(4 步,缺一不可):
+  adb shell "kill \$(ps -A | grep 'tmp/audioserver' | awk '{print \$2}') 2>/dev/null"   # a. 杀 rusda 进程(按路径匹配,不误杀系统 audioserver)
+  adb forward --remove tcp:47777 # b. 移除端口转发(必须——残留转发=连接口仍开着)
+  adb shell setenforce 1          # c. 立即恢复 enforcing(关键!)
+  # d. 文件处置(二选一):
+  #    彻底干净:  adb shell "rm -f /data/local/tmp/audioserver"(下次需重新 push 53MB)
+  #    保留复用:  adb shell "ls /data/local/tmp/audioserver"(下次直接 setsid 启动,免重新部署)
 ```
 
 ⚠️ **setenforce 0 期间的信号**:全局 permissive 是系统级异常(正常设备 enforcing)——**分析期间不要开银行 App**;分析完立即恢复 enforcing 即无残留。
