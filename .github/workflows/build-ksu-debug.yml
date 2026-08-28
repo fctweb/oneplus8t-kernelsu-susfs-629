@@ -223,15 +223,6 @@ jobs:
             grep -c 'KSU_ROOT_SHELL_CLEAR_STATE' KernelSU/kernel/policy/app_profile.c 2>/dev/null || \
             grep -c 'KSU_ROOT_SHELL_CLEAR_STATE' kernel/policy/app_profile.c 2>/dev/null || echo "0"
 
-      - name: Inject KSU whitelist check into fork.c SUSFS hide-bit assignment
-        working-directory: kernel
-        run: |
-          echo "=== Adding KSU whitelist check to fork.c SUSFS hide bit ==="
-          python3 ../scripts/inject-fork-susfs-whitelist.py .
-          echo "=== Verification ==="
-          grep -c 'KSU_FORK_SUSFS_WHITELIST' kernel/fork.c 2>/dev/null || echo "0"
-          grep -n '__ksu_is_allow_uid_for_current(current_uid().val)' kernel/fork.c 2>/dev/null || echo "no whitelist check"
-
       - name: Fix UAPI version mismatch (legacy → v2 compat)
         working-directory: kernel
         run: |
@@ -944,3 +935,12 @@ jobs:
           retention-days: 30
 
 # trigger-175626
+      - name: Inject KSU whitelist check into fork.c SUSFS hide-bit assignment
+        working-directory: kernel
+        run: |
+          echo "=== Adding KSU whitelist check to fork.c SUSFS hide bit ==="
+          python3 ../scripts/inject-fork-susfs-whitelist.py .
+          echo "=== Verification ==="
+          grep -c 'KSU_FORK_SUSFS_WHITELIST' kernel/fork.c 2>/dev/null || echo "0"
+          grep -n '__ksu_is_allow_uid_for_current(current_uid().val)' kernel/fork.c 2>/dev/null || echo "no whitelist check"
+
