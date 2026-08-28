@@ -82,16 +82,16 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel
-          key: lineage-kernel-ef098aedd975479e0aaf440bc14e8ba7c589c561-004
+          key: lineage-kernel-5dea892fe7e4-004
 
       - name: Clone LineageOS 20 kernel source (device exact commit)
         if: steps.cache-kernel.outputs.cache-hit != 'true'
         run: |
-          git clone --depth 1 --single-branch --branch lineage-20 \
-            https://github.com/LineageOS/android_kernel_oneplus_sm8250.git kernel
+          git init kernel
           cd kernel
-          git fetch --depth 1 origin ef098aedd975479e0aaf440bc14e8ba7c589c561
-          git checkout ef098aedd975479e0aaf440bc14e8ba7c589c561
+          git remote add origin https://github.com/LineageOS/android_kernel_oneplus_sm8250.git
+          git fetch --depth 1 origin 5dea892fe7e4ecfbd47e5e9467da5cbdded54821
+          git checkout FETCH_HEAD
 
       - name: Apply kernel compatibility patches
         working-directory: kernel
