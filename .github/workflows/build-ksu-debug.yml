@@ -1,4 +1,4 @@
-name: Build rsuntk KSU + SUSFS Kernel (debug)
+﻿name: Build rsuntk KSU + SUSFS Kernel (debug)
 
 on:
   push:
@@ -82,7 +82,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: kernel
-          key: lineage-kernel-5dea892fe7e4-004
+          key: lineage-kernel-ef098aedd975479e0aaf440bc14e8ba7c589c561-004
 
       - name: Clone LineageOS 20 kernel source (device exact commit)
         if: steps.cache-kernel.outputs.cache-hit != 'true'
@@ -90,8 +90,8 @@ jobs:
           git clone --depth 1 --single-branch --branch lineage-20 \
             https://github.com/LineageOS/android_kernel_oneplus_sm8250.git kernel
           cd kernel
-          git fetch --depth 1 origin 5dea892fe7e4
-          git checkout 5dea892fe7e4
+          git fetch --depth 1 origin ef098aedd975479e0aaf440bc14e8ba7c589c561
+          git checkout ef098aedd975479e0aaf440bc14e8ba7c589c561
 
       - name: Apply kernel compatibility patches
         working-directory: kernel
